@@ -3,7 +3,7 @@
 module SmartRouter
   class PipelineContext
     attr_reader :operation, :providers, :attempts
-    attr_accessor :eligible_providers
+    attr_accessor :eligible_providers, :selected_provider, :selection_reason
 
     def self.for(operation, providers:)
       new(
@@ -14,11 +14,14 @@ module SmartRouter
       )
     end
 
-    def initialize(operation:, providers:, attempts:, eligible_providers:)
+    def initialize(operation:, providers:, attempts:, eligible_providers:,
+                   selected_provider: nil, selection_reason: nil)
       @operation = operation
       @providers = providers
       @attempts = attempts
       @eligible_providers = eligible_providers
+      @selected_provider = selected_provider
+      @selection_reason = selection_reason
     end
 
     def add_attempt(provider, decision, reason)
