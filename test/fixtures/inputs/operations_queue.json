@@ -1,0 +1,14 @@
+[
+  {
+    "operation_id": "op_101",
+    "created_at": "2026-07-30T09:05:00+03:00",
+    "amount": 15000,
+    "bank": "sberbank"
+  },
+  {
+    "operation_id": "op_102",
+    "created_at": "2026-07-30T09:05:30+03:00",
+    "amount": 48000,
+    "bank": "alfa"
+  }
+]

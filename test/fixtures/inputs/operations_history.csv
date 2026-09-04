@@ -1,0 +1,3 @@
+operation_id,created_at,amount,bank,card_brand,payment_system,status,latency_sec
+op_001,2026-07-29T08:00:00+03:00,12000,alfa,,vipay,approved,76
+op_002,2026-07-29T08:01:57+03:00,12000,tinkoff,,quickpay,approved,79
