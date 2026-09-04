@@ -67,8 +67,9 @@ RUBY
 
 Что важно про этот run:
 
-- `data/operations_history.csv` на этой стадии обязателен и валидируется, но ещё не влияет на выбор провайдера
+- `data/operations_history.csv` на этой стадии обязателен и валидируется как часть входного контракта; он нужен для следующих этапов stateful/analytic evolution
 - при сломанных входах или отсутствии eligible-провайдера прогон останавливается `InputError`
+- heredoc сначала собирает весь массив `records` в памяти и только потом вызывает `SmartRouter::RoutingDecisionsWriter.write`; если на любой операции случится `InputError`, итоговый `tmp/routing_decisions.json` не будет записан
 - текущий пример показывает именно ручную сборку batch-прохода, а не отдельный shipped CLI
 
 Если нужен быстрый просмотр результата:
@@ -77,7 +78,7 @@ RUBY
 ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.read("tmp/routing_decisions.json")))'
 ```
 
-Один record в выходном JSON выглядит так:
+Ниже - фактический record для `op_103` в full-catalog manual run на текущих project data:
 
 ```json
 {
@@ -86,12 +87,22 @@ ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.read("tmp/routing_deci
   "attempts": [
     { "provider": "vipay", "decision": "skipped", "reason": "amount_exceeds_limit" },
     { "provider": "payflow", "decision": "skipped", "reason": "amount_exceeds_limit" },
-    { "provider": "quickpay", "decision": "selected", "reason": "only_eligible_provider" }
+    { "provider": "quickpay", "decision": "selected", "reason": "first_eligible" }
   ],
   "simulated_result": "approved",
   "latency_sec": 29
 }
 ```
+
+## Troubleshooting
+
+Если manual run падает с `InputError`, чаще всего проблема в одном из этих мест:
+
+- битый JSON в `config/providers.json` или `data/operations_queue.json`
+- плохие CSV headers в `data/operations_history.csv`
+- missing keys во входной операции или каталоге провайдеров
+- non-numeric fields там, где ожидается число
+- invalid timestamps, если `created_at` не проходит ISO 8601 parsing
 
 ## Как устроен текущий pipeline Epic 1
 
@@ -105,8 +116,9 @@ ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.read("tmp/routing_deci
 
 Текущий контракт входов такой:
 
-- `config/providers.json` - JSON-объект с массивом `"providers"`
-- `data/operations_queue.json` - JSON-массив операций
+- `config/providers.json` - JSON-объект с массивом `"providers"`; актуальный полный schema-template берите прямо из этого файла
+- `data/operations_queue.json` - JSON-массив операций; для custom queue обязательны `operation_id`, `created_at`, `amount`, `bank`
+- `created_at` должен быть ISO 8601 timestamp, а `amount` - numeric JSON value
 - `data/operations_history.csv` - CSV с обязательными заголовками `operation_id`, `created_at`, `amount`, `bank`, `payment_system`, `status`, `latency_sec`
 
 Если файл отсутствует, сломан или не проходит базовую валидацию, прогон останавливается явной ошибкой. Частичный результат при этом не должен выглядеть как успешный run.
@@ -119,6 +131,7 @@ ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.read("tmp/routing_deci
 
 - провайдеры со статусом, отличным от `active`, исключаются молча и не попадают в `attempts`
 - `spacepayments` проходит как special-case: для него текущий hard filter bypass'ит обычные ограничения и оставляет его eligible-кандидатом, но это ещё не отдельный fallback-механизм Epic 2
+- bank filter работает коротко так: `banks` + `exclude_banks=false` - это whitelist, а `exclude_banks=true` - blacklist по перечисленному списку
 
 Для каждого hard-skip в `attempts` остаётся каноническая причина вроде:
 
@@ -133,7 +146,7 @@ ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.read("tmp/routing_deci
 
 ### 3. `BaselineSelector`
 
-`SmartRouter::BaselineSelector` работает только с уже допустимым пулом. Текущая baseline-политика простая и воспроизводимая: выбрать провайдера с лучшим порядком по `priority`, а при равенстве использовать детерминированный tie-breaker по `payment_system`.
+`SmartRouter::BaselineSelector` работает только с уже допустимым пулом. Текущая baseline-политика простая и воспроизводимая: lower `priority` wins, а при равенстве используется лексикографический ascending tie-breaker по `payment_system`.
 
 Причина выбора тоже фиксируется явно:
 
@@ -156,8 +169,8 @@ ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.read("tmp/routing_deci
 
 - `attempts` содержит hard-skips и ровно один финальный `selected`
 - eligible-провайдеры, которых не пришлось скипать и которые не были выбраны, в `attempts` не попадают
-- `simulated_result` детерминированно вычисляется из `operation_id` и выбранного провайдера и всегда остаётся в одном из значений `approved`, `rejected`, `expired`
-- `latency_sec` получается из `avg_latency_sec`, приводится к целому и не опускается ниже `1`
+- `simulated_result` probability-inspired через `conversion_24h`, но для одинаковой пары `operation_id` + provider остаётся детерминированным и всегда попадает в `approved`, `rejected`, `expired`
+- `latency_sec` берётся из `avg_latency_sec` через integer truncation (`to_i`) и не опускается ниже `1`
 
 Затем `SmartRouter::RoutingDecisionsWriter` сохраняет итог как JSON-массив без частично записанного файла.
 
