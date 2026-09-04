@@ -2,7 +2,8 @@
 
 module SmartRouter
   class PipelineContext
-    attr_reader :operation, :providers, :attempts, :eligible_providers
+    attr_reader :operation, :providers, :attempts
+    attr_accessor :eligible_providers
 
     def self.for(operation, providers:)
       new(
@@ -18,6 +19,15 @@ module SmartRouter
       @providers = providers
       @attempts = attempts
       @eligible_providers = eligible_providers
+    end
+
+    def add_attempt(provider, decision, reason)
+      provider_name = provider.is_a?(Provider) ? provider.payment_system : provider.to_s
+      @attempts << {
+        "provider" => provider_name,
+        "decision" => decision.to_s,
+        "reason" => reason.to_s
+      }
     end
   end
 end
