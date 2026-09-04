@@ -1,0 +1,17 @@
+GEM
+  remote: https://rubygems.org/
+  specs:
+
+PLATFORMS
+  ruby
+  x86_64-darwin-23
+
+DEPENDENCIES
+
+CHECKSUMS
+
+RUBY VERSION
+  ruby 3.2.11
+
+BUNDLED WITH
+  4.0.9
