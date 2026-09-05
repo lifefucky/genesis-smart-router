@@ -54,7 +54,7 @@ class IntegrationDecisionRecordTest < Minitest::Test
     )
     selected = record["attempts"].select { |attempt| attempt["decision"] == "selected" }
     assert_equal 1, selected.length
-    assert_includes %w[approved rejected expired], record["simulated_result"]
+    assert_equal "approved", record["simulated_result"]
     assert_instance_of Integer, record["latency_sec"]
     assert_operator record["latency_sec"], :>=, 1
   end
@@ -72,6 +72,35 @@ class IntegrationDecisionRecordTest < Minitest::Test
     assert_equal records.first["latency_sec"], records.last["latency_sec"]
     assert_equal records.first["selected_provider"], records.last["selected_provider"]
     assert_equal records.first["attempts"], records.last["attempts"]
+  end
+
+  def test_full_catalog_leftover_selects_spacepayments
+    inputs = load_project_inputs
+    operation = SmartRouter::Operation.from_hash(
+      {
+        "operation_id" => "op_leftover",
+        "created_at" => "2026-09-04T12:00:00+03:00",
+        "amount" => 250_000,
+        "bank" => "sberbank"
+      },
+      path: "test"
+    )
+    context, working = run_cascade(operation, inputs.providers)
+    record = SmartRouter::DecisionRecordBuilder.build(context)
+    catalog = inputs.providers.find { |provider| provider.payment_system == "spacepayments" }
+    chosen = working.find { |provider| provider.payment_system == "spacepayments" }
+
+    assert_equal "spacepayments", record["selected_provider"]
+    assert_equal "self_provider_fallback", context.selection_reason
+    assert_equal "approved", record["simulated_result"]
+    assert_includes record["attempts"], {
+      "provider" => "spacepayments",
+      "decision" => "selected",
+      "reason" => "self_provider_fallback"
+    }
+    assert(record["attempts"].none? { |attempt| attempt["decision"] == "selected" && attempt["provider"] != "spacepayments" })
+    assert_equal catalog.daily_approved_amount + 250_000, chosen.daily_approved_amount
+    assert_equal catalog.available_requisites - 1, chosen.available_requisites
   end
 
   def test_queue_carries_working_set_and_leaves_catalog_clean

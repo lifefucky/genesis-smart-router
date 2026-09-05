@@ -13,11 +13,17 @@ module SmartRouter
 
     def execute(context, tracker:)
       eligible = Array(context.eligible_providers)
-      if eligible.empty?
+      external_eligible = eligible.reject { |provider| provider.payment_system == "spacepayments" }
+      self_provider = context.providers.find do |provider|
+        provider.payment_system == "spacepayments" && provider.status == "active"
+      end
+
+      if external_eligible.empty? && self_provider.nil?
         raise_no_provider!(context)
       end
 
-      cascade = eligible.sort_by { |provider| [provider.priority, provider.payment_system] }
+      cascade = external_eligible.sort_by { |provider| [provider.priority, provider.payment_system] }
+      cascade << self_provider if self_provider
       amount = context.operation.amount
 
       cascade.each do |provider|
@@ -27,7 +33,7 @@ module SmartRouter
 
         case outcome
         when "approved"
-          reason = eligible.one? ? "only_eligible_provider" : "first_eligible"
+          reason = selection_reason_for(provider, external_eligible)
           context.selected_provider = provider
           context.selection_reason = reason
           context.add_attempt(provider, "selected", reason)
@@ -41,6 +47,12 @@ module SmartRouter
     end
 
     private
+
+    def selection_reason_for(provider, external_eligible)
+      return "self_provider_fallback" if provider.payment_system == "spacepayments"
+
+      external_eligible.one? ? "only_eligible_provider" : "first_eligible"
+    end
 
     def raise_no_provider!(context)
       operation_id = context.operation&.operation_id

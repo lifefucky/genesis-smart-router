@@ -145,6 +145,42 @@ class FallbackExecutorTest < Minitest::Test
     assert_equal working_before, context.providers.map { |provider| snapshot(provider) }
   end
 
+  def test_final_expired_records_skip_and_raises_input_error
+    first = build_provider(payment_system: "vipay", priority: 1, conversion_24h: 1.0)
+    second = build_provider(payment_system: "payflow", priority: 2, conversion_24h: 1.0)
+    context, tracker = context_with(
+      [first, second],
+      operation: build_operation(operation_id: "op_test")
+    )
+    simulate_singleton = class << SmartRouter::DecisionRecordBuilder
+      self
+    end
+    outcomes = %w[rejected expired]
+    simulate_singleton.alias_method :__original_simulate_result, :simulate_result
+    simulate_singleton.define_method(:simulate_result) do |*_args|
+      outcomes.shift || raise("unexpected extra simulate_result call")
+    end
+
+    error = assert_raises(SmartRouter::InputError) do
+      SmartRouter::FallbackExecutor.execute(context, tracker: tracker)
+    end
+
+    assert_includes error.message, "no eligible providers"
+    assert_nil context.selected_provider
+    assert_equal(
+      [
+        { "provider" => "vipay", "decision" => "skipped", "reason" => "provider_rejected" },
+        { "provider" => "payflow", "decision" => "skipped", "reason" => "provider_expired" }
+      ],
+      context.attempts
+    )
+  ensure
+    if simulate_singleton&.method_defined?(:__original_simulate_result)
+      simulate_singleton.alias_method :simulate_result, :__original_simulate_result
+      simulate_singleton.remove_method :__original_simulate_result
+    end
+  end
+
   def test_hard_skip_stays_in_place_then_execution_skip_and_selected
     skipped = build_provider(payment_system: "blocked", priority: 9)
     first = build_provider(payment_system: "vipay", priority: 1, conversion_24h: 0.0)
@@ -199,6 +235,220 @@ class FallbackExecutorTest < Minitest::Test
       [{ "provider" => "vipay", "decision" => "skipped", "reason" => "daily_limit_exceeded" }],
       next_ctx.attempts
     )
+    assert_equal catalog_before, snapshot(catalog)
+  end
+
+  def test_spacepayments_selected_after_external_failures
+    first = build_provider(payment_system: "vipay", priority: 1, conversion_24h: 1.0)
+    second = build_provider(payment_system: "payflow", priority: 2, conversion_24h: 1.0)
+    self_provider = build_self_provider(conversion_24h: 1.0)
+    context, tracker = context_with(
+      [self_provider, second, first],
+      operation: build_operation(operation_id: "op_test")
+    )
+    chosen = context.providers.find { |provider| provider.payment_system == "spacepayments" }
+    simulate_singleton = class << SmartRouter::DecisionRecordBuilder
+      self
+    end
+    outcomes = %w[rejected expired approved]
+    simulate_singleton.alias_method :__original_simulate_result, :simulate_result
+    simulate_singleton.define_method(:simulate_result) do |*_args|
+      outcomes.shift || raise("unexpected extra simulate_result call")
+    end
+
+    SmartRouter::FallbackExecutor.execute(context, tracker: tracker)
+
+    assert_equal "spacepayments", context.selected_provider.payment_system
+    assert_equal "self_provider_fallback", context.selection_reason
+    assert_equal(
+      [
+        { "provider" => "vipay", "decision" => "skipped", "reason" => "provider_rejected" },
+        { "provider" => "payflow", "decision" => "skipped", "reason" => "provider_expired" },
+        { "provider" => "spacepayments", "decision" => "selected", "reason" => "self_provider_fallback" }
+      ],
+      context.attempts
+    )
+    assert_approved_permanent_updates(chosen, amount: 500)
+  ensure
+    if simulate_singleton&.method_defined?(:__original_simulate_result)
+      simulate_singleton.alias_method :simulate_result, :__original_simulate_result
+      simulate_singleton.remove_method :__original_simulate_result
+    end
+  end
+
+  def test_leftover_only_spacepayments_selects_without_external_attempts
+    blocked = build_provider(payment_system: "vipay", priority: 1, conversion_24h: 1.0)
+    self_provider = build_self_provider(conversion_24h: 1.0)
+    context, tracker = context_with(
+      [blocked, self_provider],
+      eligible: [self_provider],
+      operation: build_operation(operation_id: "op_test")
+    )
+    context.add_attempt(blocked, "skipped", "amount_exceeds_limit")
+
+    SmartRouter::FallbackExecutor.execute(context, tracker: tracker)
+    record = SmartRouter::DecisionRecordBuilder.build(context)
+
+    assert_equal "spacepayments", context.selected_provider.payment_system
+    assert_equal "self_provider_fallback", context.selection_reason
+    assert_equal(
+      [
+        { "provider" => "vipay", "decision" => "skipped", "reason" => "amount_exceeds_limit" },
+        { "provider" => "spacepayments", "decision" => "selected", "reason" => "self_provider_fallback" }
+      ],
+      context.attempts
+    )
+    assert_equal "spacepayments", record["selected_provider"]
+    assert_equal "approved", record["simulated_result"]
+    assert_equal(
+      SmartRouter::DecisionRecordBuilder.simulate_result(context.operation, context.selected_provider),
+      record["simulated_result"]
+    )
+  end
+
+  def test_empty_eligible_with_active_spacepayments_in_providers_is_leftover
+    self_provider = build_self_provider(conversion_24h: 1.0)
+    context = SmartRouter::PipelineContext.for(build_operation, providers: [self_provider])
+    context.eligible_providers = []
+    tracker = SmartRouter::StateTracker.new
+
+    SmartRouter::FallbackExecutor.execute(context, tracker: tracker)
+
+    assert_equal "spacepayments", context.selected_provider.payment_system
+    assert_equal "self_provider_fallback", context.selection_reason
+    assert_equal(
+      [{ "provider" => "spacepayments", "decision" => "selected", "reason" => "self_provider_fallback" }],
+      context.attempts
+    )
+  end
+
+  def test_external_approved_omits_spacepayments_from_attempts
+    external = build_provider(payment_system: "quickpay", priority: 3, conversion_24h: 1.0)
+    self_provider = build_self_provider(conversion_24h: 1.0)
+    context, tracker = context_with([self_provider, external])
+    called = []
+    simulate_singleton = class << SmartRouter::DecisionRecordBuilder
+      self
+    end
+    simulate_singleton.alias_method :__original_simulate_result, :simulate_result
+    simulate_singleton.define_method(:simulate_result) do |_operation, provider|
+      called << provider.payment_system
+      "approved"
+    end
+
+    SmartRouter::FallbackExecutor.execute(context, tracker: tracker)
+
+    assert_equal "quickpay", context.selected_provider.payment_system
+    assert_equal "only_eligible_provider", context.selection_reason
+    assert_equal ["quickpay"], called
+    refute(context.attempts.any? { |attempt| attempt["provider"] == "spacepayments" })
+    assert_equal(
+      [{ "provider" => "quickpay", "decision" => "selected", "reason" => "only_eligible_provider" }],
+      context.attempts
+    )
+  ensure
+    if simulate_singleton&.method_defined?(:__original_simulate_result)
+      simulate_singleton.alias_method :simulate_result, :__original_simulate_result
+      simulate_singleton.remove_method :__original_simulate_result
+    end
+  end
+
+  def test_spacepayments_failure_after_externals_raises_input_error
+    external = build_provider(payment_system: "quickpay", priority: 3, conversion_24h: 1.0)
+    self_provider = build_self_provider(conversion_24h: 1.0)
+    context, tracker = context_with(
+      [self_provider, external],
+      operation: build_operation(operation_id: "op_test")
+    )
+    simulate_singleton = class << SmartRouter::DecisionRecordBuilder
+      self
+    end
+    called = []
+    simulate_singleton.alias_method :__original_simulate_result, :simulate_result
+    simulate_singleton.define_method(:simulate_result) do |_operation, provider|
+      called << provider.payment_system
+      "rejected"
+    end
+
+    error = assert_raises(SmartRouter::InputError) do
+      SmartRouter::FallbackExecutor.execute(context, tracker: tracker)
+    end
+
+    assert_includes error.message, "no eligible providers"
+    assert_nil context.selected_provider
+    assert_equal %w[quickpay spacepayments], called
+    refute(context.attempts.any? { |attempt| attempt["decision"] == "selected" })
+    assert_equal(
+      [
+        { "provider" => "quickpay", "decision" => "skipped", "reason" => "provider_rejected" },
+        { "provider" => "spacepayments", "decision" => "skipped", "reason" => "provider_rejected" }
+      ],
+      context.attempts
+    )
+  ensure
+    if simulate_singleton&.method_defined?(:__original_simulate_result)
+      simulate_singleton.alias_method :simulate_result, :__original_simulate_result
+      simulate_singleton.remove_method :__original_simulate_result
+    end
+  end
+
+  def test_inactive_spacepayments_does_not_close_exhausted_cascade
+    external = build_provider(payment_system: "quickpay", priority: 3, conversion_24h: 0.0)
+    self_provider = build_self_provider(status: "inactive", conversion_24h: 1.0)
+    context, tracker = context_with(
+      [self_provider, external],
+      operation: build_operation(operation_id: "op_test")
+    )
+    simulate_singleton = class << SmartRouter::DecisionRecordBuilder
+      self
+    end
+    simulate_singleton.alias_method :__original_simulate_result, :simulate_result
+    simulate_singleton.define_method(:simulate_result) do |*_args|
+      "rejected"
+    end
+
+    error = assert_raises(SmartRouter::InputError) do
+      SmartRouter::FallbackExecutor.execute(context, tracker: tracker)
+    end
+
+    assert_includes error.message, "no eligible providers"
+    assert_nil context.selected_provider
+    refute(context.attempts.any? { |attempt| attempt["provider"] == "spacepayments" })
+    assert_equal(
+      [{ "provider" => "quickpay", "decision" => "skipped", "reason" => "provider_rejected" }],
+      context.attempts
+    )
+  ensure
+    if simulate_singleton&.method_defined?(:__original_simulate_result)
+      simulate_singleton.alias_method :simulate_result, :__original_simulate_result
+      simulate_singleton.remove_method :__original_simulate_result
+    end
+  end
+
+  def test_next_operation_sees_spacepayments_approved_working_set
+    catalog = build_self_provider(
+      conversion_24h: 1.0,
+      daily_approved_amount: 1000,
+      available_requisites: 8
+    )
+    catalog_before = snapshot(catalog)
+    working = [catalog.dup]
+    tracker = SmartRouter::StateTracker.new
+
+    first_op = build_operation(operation_id: "op_first", amount: 50)
+    first_ctx = SmartRouter::PipelineContext.for(first_op, providers: working)
+    first_ctx.eligible_providers = []
+    SmartRouter::FallbackExecutor.execute(first_ctx, tracker: tracker)
+    working = first_ctx.providers
+
+    next_op = build_operation(operation_id: "op_next", amount: 50)
+    next_ctx = SmartRouter::PipelineContext.for(next_op, providers: working)
+    SmartRouter::HardConstraintsFilter.filter(next_ctx)
+
+    assert_equal "spacepayments", first_ctx.selected_provider.payment_system
+    assert_equal 1050, working.first.daily_approved_amount
+    assert_equal 7, working.first.available_requisites
+    assert_equal ["spacepayments"], next_ctx.eligible_providers.map(&:payment_system)
     assert_equal catalog_before, snapshot(catalog)
   end
 
@@ -336,6 +586,21 @@ class FallbackExecutorTest < Minitest::Test
       conversion_24h: provider.conversion_24h,
       banks: provider.banks.dup
     }
+  end
+
+  def build_self_provider(overrides = {})
+    build_provider(
+      {
+        payment_system: "spacepayments",
+        priority: 99,
+        traffic_percentage: 0,
+        limit_amount_min: nil,
+        limit_amount_max: nil,
+        daily_amount_limit: nil,
+        in_progress_count_limit: nil,
+        in_progress_amount_limit: nil
+      }.merge(overrides)
+    )
   end
 
   def build_provider(overrides = {})

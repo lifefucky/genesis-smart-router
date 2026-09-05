@@ -9,7 +9,7 @@
 - Безопасная загрузка входов через `SmartRouter::RunInputs`
 - Hard-constraints filtering через `SmartRouter::HardConstraintsFilter`
 - Синхронный in-memory трекер состояния через `SmartRouter::StateTracker`
-- Fallback-каскад через `SmartRouter::FallbackExecutor` (порядок как у `BaselineSelector`: `[priority, payment_system]`)
+- Fallback-каскад через `SmartRouter::FallbackExecutor` (внешние в порядке `[priority, payment_system]`, `spacepayments` — last-resort в хвосте)
 - Explainable decision record через `SmartRouter::DecisionRecordBuilder`
 - Атомарная запись JSON-массива решений через `SmartRouter::RoutingDecisionsWriter`
 
@@ -38,7 +38,7 @@ ruby -Ilib:test test/smart_router/integration_decision_record_test.rb
 
 - `ruby -v` подтверждает, что вы действительно на Ruby `>= 3.2`
 - `ruby -Ilib:test -e "Dir['test/**/*_test.rb'].each { |f| require './' + f }"` прогоняет текущий test suite
-- `integration_decision_record_test.rb` показывает лучший фактический end-to-end пример Epic 1–2.2
+- `integration_decision_record_test.rb` показывает лучший фактический end-to-end пример Epic 1–2.3
 
 ## Как вручную собрать текущий routing run
 
@@ -72,7 +72,7 @@ RUBY
 Что важно про этот run:
 
 - `data/operations_history.csv` на этой стадии обязателен и валидируется как часть входного контракта; он нужен для следующих этапов stateful/analytic evolution
-- при сломанных входах, пустом eligible-пуле или исчерпании каскада без `approved` прогон останавливается `InputError`
+- при сломанных входах, пустом пуле без активного `spacepayments` или исчерпании каскада включая last-resort без `approved` прогон останавливается `InputError`
 - heredoc сначала собирает весь массив `records` в памяти и только потом вызывает `SmartRouter::RoutingDecisionsWriter.write`; если на любой операции случится `InputError`, итоговый `tmp/routing_decisions.json` не будет записан
 - текущий пример показывает именно ручную сборку batch-прохода, а не отдельный shipped CLI
 
@@ -91,7 +91,7 @@ ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.read("tmp/routing_deci
   "attempts": [
     { "provider": "vipay", "decision": "skipped", "reason": "amount_exceeds_limit" },
     { "provider": "payflow", "decision": "skipped", "reason": "amount_exceeds_limit" },
-    { "provider": "quickpay", "decision": "selected", "reason": "first_eligible" }
+    { "provider": "quickpay", "decision": "selected", "reason": "only_eligible_provider" }
   ],
   "simulated_result": "approved",
   "latency_sec": 29
@@ -107,10 +107,10 @@ ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.read("tmp/routing_deci
 - missing keys во входной операции или каталоге провайдеров
 - non-numeric fields там, где ожидается число
 - invalid timestamps, если `created_at` не проходит ISO 8601 parsing
-- пустой eligible-пул после hard-filter — прогон останавливается тем же `InputError`
-- каскад исчерпан без `approved` — прогон останавливается тем же `InputError`
+- пустой eligible-пул после hard-filter и нет активного `spacepayments` в working-set — прогон останавливается тем же `InputError`
+- каскад внешних и last-resort `spacepayments` исчерпан без `approved` — прогон останавливается тем же `InputError`
 
-## Как устроен текущий pipeline Epic 1–2.2
+## Как устроен текущий pipeline Epic 1–2.3
 
 ### 1. `RunInputs`
 
@@ -136,7 +136,7 @@ ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.read("tmp/routing_deci
 Две важные детали текущей реализации:
 
 - провайдеры со статусом, отличным от `active`, исключаются молча и не попадают в `attempts`
-- `spacepayments` проходит как special-case: hard filter по-прежнему bypass'ит обычные ограничения и оставляет его eligible. Last-resort append после исчерпания внешних — это ещё история 2.3, а не изменение фильтра и не отсутствие каскада 2.2
+- `spacepayments` проходит как special-case: hard filter bypass'ит обычные ограничения и оставляет его eligible; last-resort append делает уже `FallbackExecutor`
 - bank filter работает коротко так: `banks` + `exclude_banks=false` - это whitelist, а `exclude_banks=true` - blacklist по перечисленному списку
 
 Для каждого hard-skip в `attempts` остаётся каноническая причина вроде:
@@ -152,12 +152,13 @@ ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.read("tmp/routing_deci
 
 ### 3. `FallbackExecutor` и `StateTracker`
 
-Прогон не вызывает `BaselineSelector.select`. `SmartRouter::FallbackExecutor` берёт `eligible_providers` в том же порядке `[priority, payment_system]` и для каждой попытки делает `StateTracker#start` → симуляцию → `#finish` с тем же исходом. Сид симуляции общий с `DecisionRecordBuilder`: `operation_id:payment_system` и `conversion_24h`.
+Прогон не вызывает `BaselineSelector.select`. `SmartRouter::FallbackExecutor` сначала берёт внешних из `eligible_providers` в порядке `[priority, payment_system]`. Активный `spacepayments` из working-set дописывается в хвост каскада только если внешних нет или все их попытки провалились. Каждая попытка: `StateTracker#start` → симуляция → `#finish`. Сид общий с `DecisionRecordBuilder`: `operation_id:payment_system` и `conversion_24h`.
 
-- `approved` - провайдер становится `selected` с `only_eligible_provider` или `first_eligible`; непробованные eligible в `attempts` не попадают
+- `approved` у внешнего - `selected` с `only_eligible_provider` или `first_eligible`; `spacepayments` в `attempts` не попадает
+- `approved` у `spacepayments` - `selected` с `self_provider_fallback`
 - `rejected` / `expired` - в `attempts` пишется `skipped` с `provider_rejected` / `provider_expired`, кандидат выбывает из этой заявки, сразу следующий
 - hard-skip фильтра не переставляются и не дублируются
-- пустой eligible или никто не `approved` - `InputError`, без `selected`
+- нет активного `spacepayments` при пустых внешних, либо никто не `approved` - `InputError`, без `selected`
 
 `PipelineContext.for` копирует список провайдеров. Очередь несёт working-set: `working = inputs.providers.map(&:dup)`, после операции `working = context.providers`. Каталог `RunInputs.providers` не мутируется. Один `StateTracker` на весь прогон.
 
@@ -187,16 +188,15 @@ ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.read("tmp/routing_deci
 Важно не путать shipped baseline и следующие этапы развития:
 
 - пока нет единой CLI-команды для полного batch run
-- `spacepayments` ещё не ставится last-resort после исчерпания внешних (это история 2.3); в каскад он попадает только если уже eligible после фильтра
 - пока нет soft-scoring по traffic share, volume share, conversion или commitments
 - пока нет `routing_report_test.json` и отдельной аналитической подсистемы
 
-Иными словами, текущий README описывает честный способ проверить уже существующие Epic 1 и 2.2, а не обещаемый future-state.
+Иными словами, текущий README описывает честный способ проверить уже существующие Epic 1 и Epic 2, а не обещаемый future-state.
 
 ## Что будет дальше
 
-Следующие эпики уже запланированы, но в текущую shipped-стадию не входят:
+Epic 1–2 уже в shipped-стадии. Дальше:
 
-- **Epic 2 - Resilient Fallback and Stateful Execution.** Каскад и stateful updates уже в прогоне; оставшаяся работа эпика — last-resort `spacepayments` (история 2.3).
+- **Epic 2 - Resilient Fallback and Stateful Execution.** Каскад, stateful updates и last-resort `spacepayments` уже в прогоне.
 - **Epic 3 - Goal-Aware Smart Selection.** Добавит soft-goals и более умный выбор среди допустимых провайдеров: traffic share, volume share, conversion, amount bands и другие policy-driven факторы.
 - **Epic 4 - Routing Analytics and Tuning Feedback.** Добавит итоговую аналитику качества роутинга, `routing_report_test.json` и рекомендации для следующего прогона.
