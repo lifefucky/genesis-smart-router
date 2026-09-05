@@ -55,6 +55,8 @@ module SmartRouter
                 :conversion_24h, :avg_latency_sec, :banks, :exclude_banks,
                 :provider_margin_pct, :merchant_margin_pct, :allow_negative_agreement,
                 :note
+    attr_writer :daily_approved_amount, :in_progress_count, :in_progress_amount,
+                :available_requisites
 
     def self.from_hash(hash, path:)
       unless hash.is_a?(Hash)
