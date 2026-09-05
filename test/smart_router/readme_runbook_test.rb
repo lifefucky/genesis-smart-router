@@ -12,9 +12,12 @@ class ReadmeRunbookTest < Minitest::Test
     assert_includes readme, "нет единого CLI"
     assert_includes readme, "ручной сборкой batch-прохода"
     assert_match(
-      /SmartRouter::RunInputs\.load.*?SmartRouter::HardConstraintsFilter\.filter.*?SmartRouter::BaselineSelector\.select.*?SmartRouter::DecisionRecordBuilder\.build.*?SmartRouter::RoutingDecisionsWriter\.write/m,
+      /SmartRouter::RunInputs\.load.*?SmartRouter::HardConstraintsFilter\.filter.*?SmartRouter::FallbackExecutor\.execute.*?SmartRouter::DecisionRecordBuilder\.build.*?SmartRouter::RoutingDecisionsWriter\.write/m,
       readme
     )
+    assert_includes readme, "StateTracker"
+    assert_includes readme, "working = inputs.providers.map(&:dup)"
+    assert_includes readme, "working = context.providers"
   end
 
   def test_readme_warns_input_error_prevents_output_write

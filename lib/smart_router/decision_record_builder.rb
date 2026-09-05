@@ -17,20 +17,12 @@ module SmartRouter
         "operation_id" => operation.operation_id,
         "selected_provider" => provider.payment_system,
         "attempts" => copy_attempts(context.attempts),
-        "simulated_result" => simulate_result(operation, provider),
+        "simulated_result" => self.class.simulate_result(operation, provider),
         "latency_sec" => latency_sec(provider)
       }
     end
 
-    private
-
-    def copy_attempts(attempts)
-      Array(attempts).map do |row|
-        row.to_h.transform_keys(&:to_s).dup
-      end
-    end
-
-    def simulate_result(operation, provider)
+    def self.simulate_result(operation, provider)
       seed = "#{operation.operation_id}:#{provider.payment_system}"
             .each_byte.reduce(0) { |acc, byte| acc * 31 + byte }
       rng = Random.new(seed)
@@ -38,6 +30,14 @@ module SmartRouter
         "approved"
       else
         rng.rand < 0.5 ? "rejected" : "expired"
+      end
+    end
+
+    private
+
+    def copy_attempts(attempts)
+      Array(attempts).map do |row|
+        row.to_h.transform_keys(&:to_s).dup
       end
     end
 

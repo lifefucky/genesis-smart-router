@@ -1,6 +1,6 @@
 # genesis-smart-router
 
-`genesis-smart-router` - это текущий baseline MVP для explainable routing выплат. На этой стадии проект уже умеет загрузить входные данные, отфильтровать недопустимых провайдеров по hard-constraints, детерминированно выбрать базового кандидата по `priority` и записать валидатор-совместимый `routing_decisions*.json` с понятным `attempts`.
+`genesis-smart-router` - это текущий baseline MVP для explainable routing выплат. На этой стадии проект уже умеет загрузить входные данные, отфильтровать недопустимых провайдеров по hard-constraints, провести fallback-каскад с синхронным in-memory состоянием и записать валидатор-совместимый `routing_decisions*.json` с понятным `attempts`.
 
 Это важно понимать сразу: в репозитории пока нет единого CLI и нет отдельного batch runner entry point. Текущая версия проверяется либо тестами, либо ручной сборкой batch-прохода из уже существующих Ruby-классов.
 
@@ -8,7 +8,8 @@
 
 - Безопасная загрузка входов через `SmartRouter::RunInputs`
 - Hard-constraints filtering через `SmartRouter::HardConstraintsFilter`
-- Детерминированный baseline selection через `SmartRouter::BaselineSelector`
+- Синхронный in-memory трекер состояния через `SmartRouter::StateTracker`
+- Fallback-каскад через `SmartRouter::FallbackExecutor` (порядок как у `BaselineSelector`: `[priority, payment_system]`)
 - Explainable decision record через `SmartRouter::DecisionRecordBuilder`
 - Атомарная запись JSON-массива решений через `SmartRouter::RoutingDecisionsWriter`
 
@@ -37,14 +38,14 @@ ruby -Ilib:test test/smart_router/integration_decision_record_test.rb
 
 - `ruby -v` подтверждает, что вы действительно на Ruby `>= 3.2`
 - `ruby -Ilib:test -e "Dir['test/**/*_test.rb'].each { |f| require './' + f }"` прогоняет текущий test suite
-- `integration_decision_record_test.rb` показывает лучший фактический end-to-end пример Epic 1
+- `integration_decision_record_test.rb` показывает лучший фактический end-to-end пример Epic 1–2.2
 
 ## Как вручную собрать текущий routing run
 
 На этой стадии запуск делается не через отдельную `bin/`-утилиту, а через уже существующие классы библиотеки. Команду ниже нужно запускать из корня репозитория, потому что `SmartRouter::RunInputs.load` использует стандартные относительные пути. Она:
 
 - загружает `config/providers.json`, `data/operations_queue.json` и `data/operations_history.csv`
-- для каждой операции вручную прогоняет этапы Epic 1
+- для каждой операции вручную прогоняет Filter → FallbackExecutor → Build на общем `StateTracker` и working-set
 - пишет итоговый JSON в `tmp/routing_decisions.json`
 
 ```bash
@@ -52,11 +53,14 @@ ruby -Ilib <<'RUBY'
 require "smart_router"
 
 inputs = SmartRouter::RunInputs.load
+working = inputs.providers.map(&:dup)
+tracker = SmartRouter::StateTracker.new
 
 records = inputs.operations.map do |operation|
-  context = SmartRouter::PipelineContext.for(operation, providers: inputs.providers)
+  context = SmartRouter::PipelineContext.for(operation, providers: working)
   SmartRouter::HardConstraintsFilter.filter(context)
-  SmartRouter::BaselineSelector.select(context)
+  SmartRouter::FallbackExecutor.execute(context, tracker: tracker)
+  working = context.providers
   SmartRouter::DecisionRecordBuilder.build(context)
 end
 
@@ -68,7 +72,7 @@ RUBY
 Что важно про этот run:
 
 - `data/operations_history.csv` на этой стадии обязателен и валидируется как часть входного контракта; он нужен для следующих этапов stateful/analytic evolution
-- при сломанных входах или отсутствии eligible-провайдера прогон останавливается `InputError`
+- при сломанных входах, пустом eligible-пуле или исчерпании каскада без `approved` прогон останавливается `InputError`
 - heredoc сначала собирает весь массив `records` в памяти и только потом вызывает `SmartRouter::RoutingDecisionsWriter.write`; если на любой операции случится `InputError`, итоговый `tmp/routing_decisions.json` не будет записан
 - текущий пример показывает именно ручную сборку batch-прохода, а не отдельный shipped CLI
 
@@ -103,8 +107,10 @@ ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.read("tmp/routing_deci
 - missing keys во входной операции или каталоге провайдеров
 - non-numeric fields там, где ожидается число
 - invalid timestamps, если `created_at` не проходит ISO 8601 parsing
+- пустой eligible-пул после hard-filter — прогон останавливается тем же `InputError`
+- каскад исчерпан без `approved` — прогон останавливается тем же `InputError`
 
-## Как устроен текущий pipeline Epic 1
+## Как устроен текущий pipeline Epic 1–2.2
 
 ### 1. `RunInputs`
 
@@ -130,7 +136,7 @@ ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.read("tmp/routing_deci
 Две важные детали текущей реализации:
 
 - провайдеры со статусом, отличным от `active`, исключаются молча и не попадают в `attempts`
-- `spacepayments` проходит как special-case: для него текущий hard filter bypass'ит обычные ограничения и оставляет его eligible-кандидатом, но это ещё не отдельный fallback-механизм Epic 2
+- `spacepayments` проходит как special-case: hard filter по-прежнему bypass'ит обычные ограничения и оставляет его eligible. Last-resort append после исчерпания внешних — это ещё история 2.3, а не изменение фильтра и не отсутствие каскада 2.2
 - bank filter работает коротко так: `banks` + `exclude_banks=false` - это whitelist, а `exclude_banks=true` - blacklist по перечисленному списку
 
 Для каждого hard-skip в `attempts` остаётся каноническая причина вроде:
@@ -144,16 +150,18 @@ ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.read("tmp/routing_deci
 - `no_requisites`
 - `negative_margin`
 
-### 3. `BaselineSelector`
+### 3. `FallbackExecutor` и `StateTracker`
 
-`SmartRouter::BaselineSelector` работает только с уже допустимым пулом. Текущая baseline-политика простая и воспроизводимая: lower `priority` wins, а при равенстве используется лексикографический ascending tie-breaker по `payment_system`.
+Прогон не вызывает `BaselineSelector.select`. `SmartRouter::FallbackExecutor` берёт `eligible_providers` в том же порядке `[priority, payment_system]` и для каждой попытки делает `StateTracker#start` → симуляцию → `#finish` с тем же исходом. Сид симуляции общий с `DecisionRecordBuilder`: `operation_id:payment_system` и `conversion_24h`.
 
-Причина выбора тоже фиксируется явно:
+- `approved` - провайдер становится `selected` с `only_eligible_provider` или `first_eligible`; непробованные eligible в `attempts` не попадают
+- `rejected` / `expired` - в `attempts` пишется `skipped` с `provider_rejected` / `provider_expired`, кандидат выбывает из этой заявки, сразу следующий
+- hard-skip фильтра не переставляются и не дублируются
+- пустой eligible или никто не `approved` - `InputError`, без `selected`
 
-- `only_eligible_provider` - если допустим только один кандидат
-- `first_eligible` - если кандидатов несколько и выбран первый по baseline-порядку
+`PipelineContext.for` копирует список провайдеров. Очередь несёт working-set: `working = inputs.providers.map(&:dup)`, после операции `working = context.providers`. Каталог `RunInputs.providers` не мутируется. Один `StateTracker` на весь прогон.
 
-При равном `priority` tie-breaker идёт по `payment_system`, поэтому одинаковые входы дают одинаковый baseline-результат.
+`BaselineSelector` остаётся в библиотеке для той же сортировки, но в batch-прогоне не используется.
 
 ### 4. `DecisionRecordBuilder` и `RoutingDecisionsWriter`
 
@@ -167,9 +175,9 @@ ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.read("tmp/routing_deci
 
 На этой стадии:
 
-- `attempts` содержит hard-skips и ровно один финальный `selected`
-- eligible-провайдеры, которых не пришлось скипать и которые не были выбраны, в `attempts` не попадают
-- `simulated_result` probability-inspired через `conversion_24h`, но для одинаковой пары `operation_id` + provider остаётся детерминированным и всегда попадает в `approved`, `rejected`, `expired`
+- `attempts` содержит hard-skips, execution-skips каскада и ровно один финальный `selected`
+- eligible-провайдеры, которых не пробовали, в `attempts` не попадают
+- `simulated_result` - исход выбранного провайдера; формула та же, что у каскада
 - `latency_sec` берётся из `avg_latency_sec` через integer truncation (`to_i`) и не опускается ниже `1`
 
 Затем `SmartRouter::RoutingDecisionsWriter` сохраняет итог как JSON-массив без частично записанного файла.
@@ -179,17 +187,16 @@ ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.read("tmp/routing_deci
 Важно не путать shipped baseline и следующие этапы развития:
 
 - пока нет единой CLI-команды для полного batch run
-- пока нет cascade retry после `rejected` или `expired`
-- пока нет stateful обновления метрик провайдера между операциями
+- `spacepayments` ещё не ставится last-resort после исчерпания внешних (это история 2.3); в каскад он попадает только если уже eligible после фильтра
 - пока нет soft-scoring по traffic share, volume share, conversion или commitments
 - пока нет `routing_report_test.json` и отдельной аналитической подсистемы
 
-Иными словами, текущий README описывает честный способ проверить уже существующий Epic 1, а не обещаемый future-state.
+Иными словами, текущий README описывает честный способ проверить уже существующие Epic 1 и 2.2, а не обещаемый future-state.
 
 ## Что будет дальше
 
 Следующие эпики уже запланированы, но в текущую shipped-стадию не входят:
 
-- **Epic 2 - Resilient Fallback and Stateful Execution.** Добавит переход к следующему кандидату при отказе или таймауте и корректное обновление состояния провайдеров между операциями.
+- **Epic 2 - Resilient Fallback and Stateful Execution.** Каскад и stateful updates уже в прогоне; оставшаяся работа эпика — last-resort `spacepayments` (история 2.3).
 - **Epic 3 - Goal-Aware Smart Selection.** Добавит soft-goals и более умный выбор среди допустимых провайдеров: traffic share, volume share, conversion, amount bands и другие policy-driven факторы.
 - **Epic 4 - Routing Analytics and Tuning Feedback.** Добавит итоговую аналитику качества роутинга, `routing_report_test.json` и рекомендации для следующего прогона.

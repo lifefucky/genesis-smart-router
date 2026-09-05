@@ -123,9 +123,11 @@ class DecisionRecordBuilderTest < Minitest::Test
     context = selected_context(provider: provider, operation: operation)
 
     record = SmartRouter::DecisionRecordBuilder.build(context)
+    shared = SmartRouter::DecisionRecordBuilder.simulate_result(operation, provider)
 
     assert_equal expected_simulated_result("op_golden", "quickpay", 0.5),
                  record["simulated_result"]
+    assert_equal record["simulated_result"], shared
   end
 
   def test_zero_conversion_is_rejected_or_expired_and_stable
