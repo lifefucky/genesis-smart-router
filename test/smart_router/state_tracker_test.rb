@@ -56,8 +56,7 @@ class StateTrackerTest < Minitest::Test
   end
 
   def test_approved_leaves_non_numeric_requisites_unchanged
-    provider = build_provider(daily_approved_amount: 1000, available_requisites: 12)
-    provider.available_requisites = "n/a"
+    provider = build_raw_provider(daily_approved_amount: 1000, available_requisites: "n/a")
     tracker = SmartRouter::StateTracker.new
 
     tracker.start(provider, 50)
@@ -65,6 +64,45 @@ class StateTrackerTest < Minitest::Test
 
     assert_equal 1050, provider.daily_approved_amount
     assert_equal "n/a", provider.available_requisites
+  end
+
+  def test_finish_rejects_mismatched_amount_and_leaves_start_snapshot
+    provider = build_provider(
+      in_progress_count: 4,
+      in_progress_amount: 100,
+      daily_approved_amount: 1000,
+      available_requisites: 12
+    )
+    tracker = SmartRouter::StateTracker.new
+    tracker.start(provider, 50)
+    after_start = snapshot(provider)
+
+    assert_raises(ArgumentError) { tracker.finish(provider, 100, "approved") }
+    assert_equal after_start, snapshot(provider)
+
+    tracker.finish(provider, 50, "approved")
+
+    assert_equal 4, provider.in_progress_count
+    assert_equal 100, provider.in_progress_amount
+    assert_equal 1050, provider.daily_approved_amount
+    assert_equal 11, provider.available_requisites
+  end
+
+  def test_second_start_without_finish_raises_and_leaves_first_start_snapshot
+    provider = build_provider(in_progress_count: 4, in_progress_amount: 100)
+    tracker = SmartRouter::StateTracker.new
+    tracker.start(provider, 50)
+    after_start = snapshot(provider)
+
+    assert_raises(ArgumentError) { tracker.start(provider, 50) }
+    assert_equal after_start, snapshot(provider)
+  end
+
+  def test_public_metric_writer_raises_and_leaves_metric_unchanged
+    provider = build_provider(in_progress_count: 4)
+
+    assert_raises(NoMethodError) { provider.in_progress_count = 1 }
+    assert_equal 4, provider.in_progress_count
   end
 
   def test_approved_does_not_decrement_zero_requisites_below_zero
@@ -122,6 +160,44 @@ class StateTrackerTest < Minitest::Test
     end
   end
 
+  def test_double_finish_raises_and_leaves_snapshot_after_first_finish
+    provider = build_provider(
+      in_progress_count: 4,
+      in_progress_amount: 100,
+      daily_approved_amount: 1000,
+      available_requisites: 12
+    )
+    tracker = SmartRouter::StateTracker.new
+    tracker.start(provider, 50)
+    tracker.finish(provider, 50, "approved")
+    after_first_finish = snapshot(provider)
+
+    assert_raises(ArgumentError) { tracker.finish(provider, 50, "approved") }
+    assert_equal after_first_finish, snapshot(provider)
+  end
+
+  def test_invalid_finish_then_valid_finish_closes_delta
+    provider = build_provider(
+      in_progress_count: 4,
+      in_progress_amount: 100,
+      daily_approved_amount: 1000,
+      available_requisites: 12
+    )
+    tracker = SmartRouter::StateTracker.new
+    tracker.start(provider, 50)
+    after_start = snapshot(provider)
+
+    assert_raises(ArgumentError) { tracker.finish(provider, 0, "approved") }
+    assert_equal after_start, snapshot(provider)
+
+    tracker.finish(provider, 50, "approved")
+
+    assert_equal 4, provider.in_progress_count
+    assert_equal 100, provider.in_progress_amount
+    assert_equal 1050, provider.daily_approved_amount
+    assert_equal 11, provider.available_requisites
+  end
+
   def test_finish_without_start_raises_and_leaves_snapshot_unchanged
     provider = build_provider(
       in_progress_count: 4,
@@ -142,7 +218,7 @@ class StateTrackerTest < Minitest::Test
     catalog = build_provider(
       payment_system: "vipay",
       daily_approved_amount: 1000,
-      daily_amount_limit: 1049,
+      daily_amount_limit: 1050,
       available_requisites: 12,
       limit_amount_min: 1,
       in_progress_count: 4,
@@ -150,20 +226,26 @@ class StateTrackerTest < Minitest::Test
     )
     catalog_before = snapshot(catalog)
     working = catalog.dup
+    next_op = build_operation(operation_id: "op_next", amount: 50)
+
+    before_ctx = SmartRouter::PipelineContext.for(next_op, providers: [working])
+    SmartRouter::HardConstraintsFilter.filter(before_ctx)
+    refute_includes(before_ctx.attempts.map { |attempt| attempt["reason"] }, "daily_limit_exceeded")
+    refute_empty before_ctx.eligible_providers
+
     tracker = SmartRouter::StateTracker.new
     tracker.start(working, 50)
     tracker.finish(working, 50, "approved")
 
-    next_op = build_operation(operation_id: "op_next", amount: 50)
-    context = SmartRouter::PipelineContext.for(next_op, providers: [working])
-    SmartRouter::HardConstraintsFilter.filter(context)
+    after_ctx = SmartRouter::PipelineContext.for(next_op, providers: [working])
+    SmartRouter::HardConstraintsFilter.filter(after_ctx)
 
     assert_equal 1050, working.daily_approved_amount
     assert_equal 11, working.available_requisites
-    assert_empty context.eligible_providers
+    assert_empty after_ctx.eligible_providers
     assert_equal(
       [{ "provider" => "vipay", "decision" => "skipped", "reason" => "daily_limit_exceeded" }],
-      context.attempts
+      after_ctx.attempts
     )
     assert_equal catalog_before, snapshot(catalog)
   end
@@ -203,8 +285,13 @@ class StateTrackerTest < Minitest::Test
     refute_same provider, copy
     assert_equal 5, copy.in_progress_count
     assert_equal 150, copy.in_progress_amount
-    copy.in_progress_count = 99
+
+    SmartRouter::StateTracker.new.start(copy, 25)
+
     assert_equal 5, provider.in_progress_count
+    assert_equal 150, provider.in_progress_amount
+    assert_equal 6, copy.in_progress_count
+    assert_equal 175, copy.in_progress_amount
   end
 
   def test_mutations_do_not_touch_limits_priority_conversion_banks_or_margin
@@ -279,7 +366,7 @@ class StateTrackerTest < Minitest::Test
   end
 
   def invalid_amounts
-    [nil, "50", Float::NAN, Float::INFINITY, -Float::INFINITY]
+    [0, -1, Rational(1, 2), Complex(1), "50", nil, Float::NAN, Float::INFINITY, -Float::INFINITY]
   end
 
   def snapshot(provider)
@@ -294,8 +381,8 @@ class StateTrackerTest < Minitest::Test
     }
   end
 
-  def build_provider(overrides = {})
-    hash = {
+  def provider_attrs(overrides = {})
+    {
       "payment_system" => "test_provider",
       "status" => "active",
       "priority" => 1,
@@ -317,8 +404,14 @@ class StateTrackerTest < Minitest::Test
       "merchant_margin_pct" => 1.5,
       "allow_negative_agreement" => false
     }.merge(overrides.transform_keys(&:to_s))
+  end
 
-    SmartRouter::Provider.from_hash(hash, path: "test")
+  def build_provider(overrides = {})
+    SmartRouter::Provider.from_hash(provider_attrs(overrides), path: "test")
+  end
+
+  def build_raw_provider(overrides = {})
+    SmartRouter::Provider.new(provider_attrs(overrides))
   end
 
   def build_operation(overrides = {})

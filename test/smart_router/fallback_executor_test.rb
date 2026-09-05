@@ -174,7 +174,7 @@ class FallbackExecutorTest < Minitest::Test
       payment_system: "vipay",
       conversion_24h: 1.0,
       daily_approved_amount: 1000,
-      daily_amount_limit: 1049,
+      daily_amount_limit: 1050,
       available_requisites: 12,
       limit_amount_min: 1
     )

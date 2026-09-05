@@ -55,8 +55,6 @@ module SmartRouter
                 :conversion_24h, :avg_latency_sec, :banks, :exclude_banks,
                 :provider_margin_pct, :merchant_margin_pct, :allow_negative_agreement,
                 :note
-    attr_writer :daily_approved_amount, :in_progress_count, :in_progress_amount,
-                :available_requisites
 
     def self.from_hash(hash, path:)
       unless hash.is_a?(Hash)
@@ -131,6 +129,15 @@ module SmartRouter
         "note" => note
       )
     end
+
+    def write_tracked_metrics(in_progress_count, in_progress_amount,
+                              daily_approved_amount, available_requisites)
+      @in_progress_count = in_progress_count
+      @in_progress_amount = in_progress_amount
+      @daily_approved_amount = daily_approved_amount
+      @available_requisites = available_requisites
+    end
+    private :write_tracked_metrics
 
     def self.require_present_string(value, field, path:)
       return if value.is_a?(String) && !value.strip.empty?
