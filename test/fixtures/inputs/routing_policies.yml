@@ -1,0 +1,5 @@
+strategies:
+  traffic_share: { enabled: true, weight: 0.25 }
+  volume_share: { enabled: true, weight: 0.25 }
+  conversion_rate: { enabled: true, weight: 0.25 }
+  financial_commitment: { enabled: true, weight: 0.25 }

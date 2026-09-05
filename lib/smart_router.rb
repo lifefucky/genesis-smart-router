@@ -3,6 +3,7 @@
 require "json"
 require "csv"
 require "time"
+require "yaml"
 
 module SmartRouter
   REQUIRED_RUBY_VERSION = "3.2.0"
@@ -16,6 +17,7 @@ module SmartRouter
   DEFAULT_PROVIDERS_PATH = "config/providers.json"
   DEFAULT_QUEUE_PATH = "data/operations_queue.json"
   DEFAULT_HISTORY_PATH = "data/operations_history.csv"
+  DEFAULT_ROUTING_POLICIES_PATH = "config/routing_policies.yml"
 
   class InputError < StandardError
     attr_reader :path
@@ -54,3 +56,10 @@ require_relative "smart_router/decision_record_builder"
 require_relative "smart_router/routing_decisions_writer"
 require_relative "smart_router/state_tracker"
 require_relative "smart_router/fallback_executor"
+require_relative "smart_router/policy_registry"
+require_relative "smart_router/strategies/base"
+require_relative "smart_router/strategies/traffic_share"
+require_relative "smart_router/strategies/volume_share"
+require_relative "smart_router/strategies/conversion_rate"
+require_relative "smart_router/strategies/financial_commitment"
+require_relative "smart_router/soft_goals_scorer"
