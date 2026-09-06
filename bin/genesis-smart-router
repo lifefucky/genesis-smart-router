@@ -14,17 +14,20 @@ end
 
 begin
   queue_arg = ARGV[0]
+  original_pwd = Dir.pwd
 
   queue_path =
     if queue_arg.nil? || queue_arg.strip.empty?
       File.join(PROJECT_ROOT, "data/operations_queue_test.json")
     else
-      File.expand_path(queue_arg, Dir.pwd)
+      File.expand_path(queue_arg, original_pwd)
     end
+
+  Dir.chdir(PROJECT_ROOT)
 
   providers_path = File.join(PROJECT_ROOT, SmartRouter::DEFAULT_PROVIDERS_PATH)
   history_path = File.join(PROJECT_ROOT, SmartRouter::DEFAULT_HISTORY_PATH)
-  root_dir = Dir.pwd
+  root_dir = PROJECT_ROOT
 
   result = SmartRouter.batch_run(
     queue_path: queue_path,
@@ -51,3 +54,4 @@ rescue StandardError => e
   usage
   exit 1
 end
+

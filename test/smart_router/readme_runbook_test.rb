@@ -9,8 +9,8 @@ class ReadmeRunbookTest < Minitest::Test
   def test_readme_states_no_cli_and_manual_pipeline
     readme = File.read(README_PATH, encoding: "UTF-8")
 
-    assert_includes readme, "нет единого CLI"
-    assert_includes readme, "ручной сборкой batch-прохода"
+    assert_includes readme, "batch runner CLI `bin/genesis-smart-router`"
+    assert_includes readme, "Manual-run из Ruby-heredoc ниже остаётся low-level runbook'ом"
     assert_match(
       /SmartRouter::RunInputs\.load.*?SmartRouter::HardConstraintsFilter\.filter.*?SmartRouter::FallbackExecutor\.execute.*?SmartRouter::DecisionRecordBuilder\.build.*?SmartRouter::RoutingDecisionsWriter\.write/m,
       readme

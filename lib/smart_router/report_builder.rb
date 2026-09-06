@@ -153,19 +153,33 @@ module SmartRouter
         signed = stats["signed_deviation"]
 
         next unless finite_number?(share) && finite_number?(target) && finite_number?(signed)
-        next unless signed > threshold
+        next unless signed.abs > threshold
 
-        recs << {
-          "provider" => name,
-          "type" => "share_deviation",
-          "reason" => "over_target_share",
-          "evidence" => {
-            "share_pct" => share,
-            "target_pct" => target,
-            "signed_deviation" => signed
-          },
-          "message" => "Фактическая доля провайдера #{name} (#{share.round(2)}%) значительно выше целевой (#{target.round(2)}%). Рассмотрите снижение traffic_percentage или пересмотр стратегии."
-        }
+        if signed > threshold
+          recs << {
+            "provider" => name,
+            "type" => "share_deviation",
+            "reason" => "over_target_share",
+            "evidence" => {
+              "share_pct" => share,
+              "target_pct" => target,
+              "signed_deviation" => signed
+            },
+            "message" => "Фактическая доля провайдера #{name} (#{share.round(2)}%) значительно выше целевой (#{target.round(2)}%). Рассмотрите снижение traffic_percentage или пересмотр стратегии."
+          }
+        elsif signed < -threshold
+          recs << {
+            "provider" => name,
+            "type" => "share_deviation",
+            "reason" => "under_target_share",
+            "evidence" => {
+              "share_pct" => share,
+              "target_pct" => target,
+              "signed_deviation" => signed
+            },
+            "message" => "Фактическая доля провайдера #{name} (#{share.round(2)}%) значительно ниже целевой (#{target.round(2)}%). Рассмотрите повышение traffic_percentage или пересмотр стратегии распределения трафика."
+          }
+        end
       end
     end
 

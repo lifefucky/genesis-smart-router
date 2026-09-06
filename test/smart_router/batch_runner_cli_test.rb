@@ -41,6 +41,29 @@ class BatchRunnerCliTest < Minitest::Test
     end
   end
 
+  def test_cli_writes_decisions_and_report_to_project_root_when_run_from_subdirectory
+    Dir.mktmpdir do |dir|
+      copy_minimal_project(dir)
+
+      output = nil
+      status = nil
+
+      Dir.chdir(File.join(dir, "bin")) do
+        cmd = [RbConfig.ruby, "-I../lib", "./genesis-smart-router"]
+        output = IO.popen(cmd, err: [:child, :out], &:read)
+        status = $?
+      end
+
+      assert status&.success?, "CLI failed with status #{status}: #{output}"
+
+      decisions_path = File.join(dir, "routing_decisions_test.json")
+      report_path = File.join(dir, "routing_report_test.json")
+
+      assert File.exist?(decisions_path), "routing_decisions_test.json was not created in project root"
+      assert File.exist?(report_path), "routing_report_test.json was not created in project root"
+    end
+  end
+
   private
 
   def copy_minimal_project(target_root)
@@ -76,3 +99,4 @@ class BatchRunnerCliTest < Minitest::Test
     )
   end
 end
+

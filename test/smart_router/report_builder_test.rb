@@ -328,4 +328,47 @@ class ReportBuilderTest < Minitest::Test
     assert entry["evidence"]["signed_deviation"] > 10.0
     assert_match(/провайдера vipay/, entry["message"])
   end
+
+  def test_generates_recommendations_for_under_target_share
+    records = [
+      decision("op_1", "vipay"),
+      decision("op_2", "payflow"),
+      decision("op_3", "payflow"),
+      decision("op_4", "quickpay"),
+      decision("op_5", "quickpay"),
+      decision("op_6", "quickpay"),
+      decision("op_7", "quickpay"),
+      decision("op_8", "quickpay"),
+      decision("op_9", "quickpay"),
+      decision("op_10", "quickpay")
+    ]
+
+    report = report_for(records)
+    recommendations = report["recommendations"]
+
+    entry = recommendations.find do |item|
+      item["provider"] == "vipay" &&
+        item["type"] == "share_deviation" &&
+        item["reason"] == "under_target_share"
+    end
+
+    refute_nil entry
+    assert entry["evidence"]["signed_deviation"] < -10.0
+    assert_match(/значительно ниже целевой/, entry["message"])
+  end
+
+  def test_does_not_generate_share_deviation_recommendations_within_threshold
+    records = []
+
+    8.times { |i| records << decision("op_v_#{i}", "vipay") }
+    7.times { |i| records << decision("op_p_#{i}", "payflow") }
+    5.times { |i| records << decision("op_q_#{i}", "quickpay") }
+
+    report = report_for(records)
+    recommendations = report["recommendations"]
+
+    share_recs = recommendations.select { |item| item["type"] == "share_deviation" }
+
+    assert_empty share_recs
+  end
 end

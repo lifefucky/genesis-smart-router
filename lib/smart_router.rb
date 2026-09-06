@@ -15,7 +15,7 @@ module SmartRouter
   end
 
   DEFAULT_PROVIDERS_PATH = "config/providers.json"
-  DEFAULT_QUEUE_PATH = "data/operations_queue.json"
+  DEFAULT_QUEUE_PATH = "data/operations_queue_test.json"
   DEFAULT_HISTORY_PATH = "data/operations_history.csv"
   DEFAULT_ROUTING_POLICIES_PATH = "config/routing_policies.yml"
 
@@ -53,8 +53,7 @@ module SmartRouter
     result = BatchRunner.run(
       queue_path: queue_path,
       providers_path: providers_path,
-      history_path: history_path,
-      root_dir: root_dir
+      history_path: history_path
     )
 
     decisions = Array(result.decisions)

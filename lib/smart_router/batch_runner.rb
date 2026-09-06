@@ -4,20 +4,18 @@ module SmartRouter
   class BatchRunner
     Result = Data.define(:decisions, :providers)
 
-    def self.run(queue_path:, providers_path:, history_path:, root_dir:)
+    def self.run(queue_path:, providers_path:, history_path:)
       new(
         providers_path: providers_path,
         queue_path: queue_path,
-        history_path: history_path,
-        root_dir: root_dir
+        history_path: history_path
       ).run
     end
 
-    def initialize(providers_path:, queue_path:, history_path:, root_dir:)
+    def initialize(providers_path:, queue_path:, history_path:)
       @providers_path = providers_path
       @queue_path = queue_path
       @history_path = history_path
-      @root_dir = root_dir
     end
 
     def run
@@ -42,3 +40,4 @@ module SmartRouter
     end
   end
 end
+
