@@ -11,7 +11,7 @@ module SmartRouter
       financial_commitment
     ].freeze
 
-    attr_reader :path, :policies
+    attr_reader :path, :policies, :current_version, :active_version
 
     @cache = {}
 
@@ -19,10 +19,11 @@ module SmartRouter
       @cache = {}
     end
 
-    def self.load(path = DEFAULT_ROUTING_POLICIES_PATH)
+    def self.load(path = DEFAULT_ROUTING_POLICIES_PATH, policy_pack: nil)
       path = path.to_s
+      cache_key = [path, policy_pack]
 
-      cached = @cache[path]
+      cached = @cache[cache_key]
       return cached if cached
 
       contents = SmartRouter.read_file(path)
@@ -37,7 +38,42 @@ module SmartRouter
         raise InputError.new("routing policies must be a mapping", path: path)
       end
 
-      raw_strategies = data["strategies"]
+      # Determine if we have a versioned file or a flat file
+      has_versions = data.key?("versions") || data.key?("current_version")
+
+      if has_versions
+        current_version = data["current_version"]
+        versions = data["versions"]
+
+        # Validate that versions is a hash
+        if versions && !versions.is_a?(Hash)
+          raise InputError.new("versions must be a mapping", path: path)
+        end
+
+        # Resolve active policy pack
+        active_version = policy_pack ? policy_pack.to_s : current_version&.to_s
+
+        if active_version.nil? || active_version.empty?
+          raise InputError.new("no active policy pack specified or found", path: path)
+        end
+
+        version_data = versions ? versions[active_version] : nil
+        if version_data.nil?
+          raise InputError.new("policy pack '#{active_version}' not found", path: path)
+        end
+
+        unless version_data.is_a?(Hash)
+          raise InputError.new("policy pack '#{active_version}' must be a mapping", path: path)
+        end
+
+        raw_strategies = version_data["strategies"]
+      else
+        # Legacy/flat YAML compatibility
+        current_version = nil
+        active_version = nil
+        raw_strategies = data["strategies"]
+      end
+
       if raw_strategies.nil?
         raw_strategies = {}
       elsif !raw_strategies.is_a?(Hash)
@@ -48,14 +84,21 @@ module SmartRouter
         [name, parse_entry(name, raw_strategies[name], path: path)]
       end
 
-      registry = new(path: path, policies: policies)
-      @cache[path] = registry
+      registry = new(
+        path: path,
+        policies: policies,
+        current_version: current_version,
+        active_version: active_version
+      )
+      @cache[cache_key] = registry
       registry
     end
 
-    def initialize(path:, policies:)
+    def initialize(path:, policies:, current_version: nil, active_version: nil)
       @path = path
       @policies = policies
+      @current_version = current_version
+      @active_version = active_version
     end
 
     def active_policies

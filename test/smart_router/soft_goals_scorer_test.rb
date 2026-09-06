@@ -1115,4 +1115,63 @@ class SoftGoalsScorerTest < Minitest::Test
 
     SmartRouter::Operation.from_hash(hash, path: "test")
   end
+
+  public
+
+  def test_versioned_policy_registry_loading
+    Dir.mktmpdir do |dir|
+      yaml_path = File.join(dir, "versioned_policies.yml")
+      yaml_content = <<~YAML
+        current_version: pack_b
+        versions:
+          pack_a:
+            strategies:
+              traffic_share: { enabled: true, weight: 0.1 }
+              volume_share: { enabled: false, weight: 0.0 }
+          pack_b:
+            strategies:
+              traffic_share: { enabled: true, weight: 0.5 }
+              volume_share: { enabled: true, weight: 0.5 }
+      YAML
+      File.write(yaml_path, yaml_content)
+
+      # 1. By default, loads current_version (pack_b)
+      registry = SmartRouter::PolicyRegistry.load(yaml_path)
+      assert_equal "pack_b", registry.active_version
+      assert_equal "pack_b", registry.current_version
+      assert registry.policies["traffic_share"].enabled
+      assert_in_delta 0.5, registry.policies["traffic_share"].weight
+      assert registry.policies["volume_share"].enabled
+
+      # 2. Explicit pack loading override (pack_a)
+      registry_a = SmartRouter::PolicyRegistry.load(yaml_path, policy_pack: :pack_a)
+      assert_equal "pack_a", registry_a.active_version
+      assert registry_a.policies["traffic_share"].enabled
+      assert_in_delta 0.1, registry_a.policies["traffic_share"].weight
+      refute registry_a.policies["volume_share"].enabled
+
+      # 3. Missing pack name raises InputError
+      assert_raises(SmartRouter::InputError) do
+        SmartRouter::PolicyRegistry.load(yaml_path, policy_pack: "non_existent")
+      end
+    end
+  end
+
+  def test_versioned_policy_registry_invalid_structures
+    Dir.mktmpdir do |dir|
+      yaml_path = File.join(dir, "invalid_versions.yml")
+      
+      # versions is not a mapping
+      File.write(yaml_path, "current_version: v1\nversions: 123")
+      assert_raises(SmartRouter::InputError) do
+        SmartRouter::PolicyRegistry.load(yaml_path)
+      end
+
+      # pack data is not a mapping
+      File.write(yaml_path, "current_version: v1\nversions:\n  v1: 456")
+      assert_raises(SmartRouter::InputError) do
+        SmartRouter::PolicyRegistry.load(yaml_path)
+      end
+    end
+  end
 end

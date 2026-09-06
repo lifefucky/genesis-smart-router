@@ -48,18 +48,26 @@ module SmartRouter
     queue_path:,
     providers_path: DEFAULT_PROVIDERS_PATH,
     history_path: DEFAULT_HISTORY_PATH,
-    root_dir: Dir.pwd
+    root_dir: Dir.pwd,
+    policy_pack: nil
   )
     result = BatchRunner.run(
       queue_path: queue_path,
       providers_path: providers_path,
-      history_path: history_path
+      history_path: history_path,
+      policy_pack: policy_pack
     )
 
     decisions = Array(result.decisions)
     providers = Array(result.providers)
 
-    report = ReportBuilder.build(decisions, providers, period: "batch_run")
+    resolved_pack = begin
+      PolicyRegistry.load(File.join(root_dir, DEFAULT_ROUTING_POLICIES_PATH), policy_pack: policy_pack).active_version
+    rescue => e
+      policy_pack
+    end
+
+    report = ReportBuilder.build(decisions, providers, period: "batch_run", policy_pack: resolved_pack)
 
     decisions_path = File.join(root_dir, "routing_decisions_test.json")
     report_path = File.join(root_dir, "routing_report_test.json")

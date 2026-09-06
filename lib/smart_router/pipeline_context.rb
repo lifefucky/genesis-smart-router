@@ -3,15 +3,17 @@
 module SmartRouter
   class PipelineContext
     attr_reader :operation, :providers, :attempts
-    attr_accessor :eligible_providers, :selected_provider, :selection_reason
+    attr_accessor :eligible_providers, :selected_provider, :selection_reason, :policy_pack
 
-    def self.for(operation, providers:)
-      new(
+    def self.for(operation, providers:, policy_pack: nil)
+      ctx = new(
         operation: operation,
         providers: providers.map(&:dup),
         attempts: [],
         eligible_providers: []
       )
+      ctx.policy_pack = policy_pack
+      ctx
     end
 
     def initialize(operation:, providers:, attempts:, eligible_providers:,

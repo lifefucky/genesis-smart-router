@@ -82,7 +82,8 @@ module SmartRouter
         execution_failed[name] = true
       end
 
-      registry = PolicyRegistry.load
+      policy_pack = context.respond_to?(:policy_pack) ? context.policy_pack : nil
+      registry = PolicyRegistry.load(DEFAULT_ROUTING_POLICIES_PATH, policy_pack: policy_pack)
       active_goals = registry.active_policies.map(&:name)
       variances = []
       recorded_goals = {}
@@ -118,7 +119,7 @@ module SmartRouter
       # 2) Scoring-based conflicts среди eligible: soft-цель ведёт к другому кандидату,
       # которого router не выбрал и который не упал на execution.
       if eligible.any? && active_goals.any?
-        scores = SoftGoalsScorer.score(eligible, operation: operation, state: state)
+        scores = SoftGoalsScorer.score(eligible, operation: operation, state: state, policy_pack: policy_pack)
         selected_name = selected.payment_system.to_s
 
         scores_by_name = scores.each_with_object({}) do |score, acc|

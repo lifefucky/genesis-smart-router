@@ -21,20 +21,21 @@ module SmartRouter
     }.freeze
 
     def self.score(eligible_providers, operation:, state: nil,
-                   policies_path: DEFAULT_ROUTING_POLICIES_PATH, strategies: {})
-      new(policies_path: policies_path, strategies: strategies)
+                   policies_path: DEFAULT_ROUTING_POLICIES_PATH, strategies: {}, policy_pack: nil)
+      new(policies_path: policies_path, strategies: strategies, policy_pack: policy_pack)
         .score(eligible_providers, operation: operation, state: state)
     end
 
-    def initialize(policies_path: DEFAULT_ROUTING_POLICIES_PATH, strategies: {})
+    def initialize(policies_path: DEFAULT_ROUTING_POLICIES_PATH, strategies: {}, policy_pack: nil)
       @policies_path = policies_path
       @strategies = DEFAULT_STRATEGIES.merge(strategies.transform_keys(&:to_s))
+      @policy_pack = policy_pack
     end
 
     def score(eligible_providers, operation:, state: nil)
       return [] if eligible_providers.nil? || eligible_providers.empty?
 
-      registry = PolicyRegistry.load(@policies_path)
+      registry = PolicyRegistry.load(@policies_path, policy_pack: @policy_pack)
       active = registry.active_policies
       resolved_state = ShareState.coerce(state)
 

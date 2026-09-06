@@ -6,10 +6,38 @@ PROJECT_ROOT = File.expand_path("..", __dir__)
 $LOAD_PATH.unshift(File.join(PROJECT_ROOT, "lib"))
 
 require "smart_router"
+require "optparse"
 
 def usage
-  warn "Usage: bin/genesis-smart-router [QUEUE_PATH]"
+  warn "Usage: bin/genesis-smart-router [QUEUE_PATH] [options]"
   warn "  QUEUE_PATH defaults to data/operations_queue_test.json relative to project root"
+  warn "Options:"
+  warn "  -p, --policy-pack PACK       Specify policy pack version to use"
+end
+
+options = {
+  policy_pack: nil
+}
+
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: bin/genesis-smart-router [QUEUE_PATH] [options]"
+
+  opts.on("-p", "--policy-pack PACK", "Specify policy pack version to use") do |p|
+    options[:policy_pack] = p
+  end
+
+  opts.on("-h", "--help", "Prints this help") do
+    warn opts
+    exit 0
+  end
+end
+
+begin
+  parser.parse!(ARGV)
+rescue OptionParser::InvalidOption, OptionParser::MissingArgument => e
+  warn "Ошибка параметров CLI: #{e.message}"
+  warn parser
+  exit 1
 end
 
 begin
@@ -33,7 +61,8 @@ begin
     queue_path: queue_path,
     providers_path: providers_path,
     history_path: history_path,
-    root_dir: root_dir
+    root_dir: root_dir,
+    policy_pack: options[:policy_pack]
   )
 
   decisions = Array(result["decisions"])

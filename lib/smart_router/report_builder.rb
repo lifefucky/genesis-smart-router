@@ -2,16 +2,16 @@
 
 module SmartRouter
   class ReportBuilder
-    def self.build(records, providers, period:)
-      new.build(records, providers, period: period)
+    def self.build(records, providers, period:, policy_pack: nil)
+      new.build(records, providers, period: period, policy_pack: policy_pack)
     end
 
-    def build(records, providers, period:)
+    def build(records, providers, period:, policy_pack: nil)
       decisions = copy_records(records)
       catalog = Array(providers)
       total = decisions.length
 
-      {
+      res = {
         "period" => period.to_s,
         "total_operations" => total,
         "distribution" => build_distribution(decisions, catalog, total),
@@ -19,6 +19,8 @@ module SmartRouter
         "projected_daily_utilization" => build_projected_daily_utilization(catalog),
         "recommendations" => build_recommendations(decisions, catalog)
       }
+      res["policy_pack"] = policy_pack.to_s if policy_pack
+      res
     end
 
     private
