@@ -15,7 +15,9 @@ module SmartRouter
         "period" => period.to_s,
         "total_operations" => total,
         "distribution" => build_distribution(decisions, catalog, total),
-        "skip_reasons" => build_skip_reasons(decisions)
+        "skip_reasons" => build_skip_reasons(decisions),
+        "projected_daily_utilization" => build_projected_daily_utilization(catalog),
+        "recommendations" => build_recommendations(decisions, catalog)
       }
     end
 
@@ -79,6 +81,100 @@ module SmartRouter
       tallies.keys.sort.each_with_object({}) do |reason, ordered|
         ordered[reason] = tallies[reason]
       end
+    end
+
+    def build_projected_daily_utilization(catalog)
+      catalog.each_with_object({}) do |provider, result|
+        name = provider.payment_system.to_s
+        next if name.empty? || result.key?(name)
+
+        limit = provider.daily_amount_limit
+        unless finite_positive_number?(limit)
+          result[name] = {
+            "limit_amount" => nil,
+            "used_amount" => nil,
+            "utilization_pct" => nil
+          }
+          next
+        end
+
+        used = provider.daily_approved_amount.to_f + provider.in_progress_amount.to_f
+        utilization = (used * 100.0) / limit
+
+        result[name] = {
+          "limit_amount" => limit,
+          "used_amount" => used,
+          "utilization_pct" => utilization
+        }
+      end
+    end
+
+    def build_recommendations(decisions, catalog)
+      distribution = build_distribution(decisions, catalog, decisions.length)
+      utilization = build_projected_daily_utilization(catalog)
+      limit_recommendations = build_limit_pressure_recommendations(utilization)
+      share_recommendations = build_share_deviation_recommendations(distribution)
+
+      (limit_recommendations + share_recommendations).sort_by do |entry|
+        [entry.fetch("provider"), entry.fetch("type"), entry.fetch("reason")]
+      end
+    end
+
+    def build_limit_pressure_recommendations(utilization)
+      threshold = 90.0
+
+      utilization.each_with_object([]) do |(name, stats), recs|
+        pct = stats["utilization_pct"]
+        limit = stats["limit_amount"]
+        used = stats["used_amount"]
+
+        next unless finite_positive_number?(limit) && finite_positive_number?(pct) && pct >= threshold
+
+        recs << {
+          "provider" => name,
+          "type" => "limit_pressure",
+          "reason" => "near_daily_limit",
+          "evidence" => {
+            "utilization_pct" => pct,
+            "limit_amount" => limit,
+            "used_amount" => used
+          },
+          "message" => "Провайдер #{name} использует #{pct.round(2)}% дневного лимита (#{used} из #{limit}). Рассмотрите снижение traffic_percentage или увеличение лимита."
+        }
+      end
+    end
+
+    def build_share_deviation_recommendations(distribution)
+      threshold = 10.0
+
+      distribution.each_with_object([]) do |(name, stats), recs|
+        share = stats["share_pct"]
+        target = stats["target_pct"]
+        signed = stats["signed_deviation"]
+
+        next unless finite_number?(share) && finite_number?(target) && finite_number?(signed)
+        next unless signed > threshold
+
+        recs << {
+          "provider" => name,
+          "type" => "share_deviation",
+          "reason" => "over_target_share",
+          "evidence" => {
+            "share_pct" => share,
+            "target_pct" => target,
+            "signed_deviation" => signed
+          },
+          "message" => "Фактическая доля провайдера #{name} (#{share.round(2)}%) значительно выше целевой (#{target.round(2)}%). Рассмотрите снижение traffic_percentage или пересмотр стратегии."
+        }
+      end
+    end
+
+    def finite_positive_number?(value)
+      value.is_a?(Numeric) && value.finite? && value.positive?
+    end
+
+    def finite_number?(value)
+      value.is_a?(Numeric) && value.finite?
     end
   end
 end

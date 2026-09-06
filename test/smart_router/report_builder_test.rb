@@ -93,6 +93,8 @@ class ReportBuilderTest < Minitest::Test
     assert_distribution_row(report["distribution"]["payflow"], count: 2, share_pct: 20.0, target_pct: 35.0)
     assert_distribution_row(report["distribution"]["quickpay"], count: 6, share_pct: 60.0, target_pct: 25.0)
     assert_equal({}, report["skip_reasons"])
+    assert_kind_of Hash, report["projected_daily_utilization"]
+    assert_kind_of Array, report["recommendations"]
   end
 
   def test_aggregates_hard_and_execution_skip_reasons
@@ -140,6 +142,8 @@ class ReportBuilderTest < Minitest::Test
       },
       report["skip_reasons"]
     )
+    assert_kind_of Hash, report["projected_daily_utilization"]
+    assert_kind_of Array, report["recommendations"]
   end
 
   def test_unused_configured_provider_has_zero_count_and_share
@@ -171,6 +175,9 @@ class ReportBuilderTest < Minitest::Test
     # а результат должен быть детерминированным при повторном запуске.
     again = report_for([])
     assert_equal report, again
+    assert_kind_of Hash, report["projected_daily_utilization"]
+    assert_equal report["projected_daily_utilization"], again["projected_daily_utilization"]
+    assert_equal([], report["recommendations"])
   end
 
   def test_does_not_copy_soft_goal_variances_into_skip_reasons
@@ -229,5 +236,96 @@ class ReportBuilderTest < Minitest::Test
 
     assert_equal first, second
     assert_equal %w[amount_exceeds_limit daily_limit_exceeded], first["skip_reasons"].keys
+  end
+
+  def test_projects_daily_utilization_for_providers_with_valid_limits
+    providers = [
+      build_provider(
+        "payment_system" => "vipay",
+        "daily_amount_limit" => 10_000,
+        "daily_approved_amount" => 2_000,
+        "in_progress_amount" => 500
+      ),
+      build_provider(
+        "payment_system" => "payflow",
+        "daily_amount_limit" => 20_000,
+        "daily_approved_amount" => 0,
+        "in_progress_amount" => 0
+      )
+    ]
+
+    report = report_for([], providers)
+    utilization = report["projected_daily_utilization"]
+
+    assert_equal 10_000, utilization["vipay"]["limit_amount"]
+    assert_in_delta 2_500.0, utilization["vipay"]["used_amount"]
+    assert_in_delta 25.0, utilization["vipay"]["utilization_pct"]
+
+    assert_equal 20_000, utilization["payflow"]["limit_amount"]
+    assert_in_delta 0.0, utilization["payflow"]["used_amount"]
+    assert_in_delta 0.0, utilization["payflow"]["utilization_pct"]
+  end
+
+  def test_handles_zero_or_invalid_limits_without_errors
+    providers = [
+      build_provider(
+        "payment_system" => "vipay",
+        "daily_amount_limit" => 0,
+        "daily_approved_amount" => 1_000,
+        "in_progress_amount" => 500
+      )
+    ]
+
+    report = report_for([], providers)
+    utilization = report["projected_daily_utilization"]
+
+    stats = utilization["vipay"]
+    refute_nil stats
+    assert_nil stats["limit_amount"]
+    assert_nil stats["used_amount"]
+    assert_nil stats["utilization_pct"]
+  end
+
+  def test_generates_recommendations_for_high_limit_utilization
+    providers = [
+      build_provider(
+        "payment_system" => "vipay",
+        "daily_amount_limit" => 10_000,
+        "daily_approved_amount" => 8_500,
+        "in_progress_amount" => 1_000
+      )
+    ]
+
+    report = report_for([], providers)
+    recommendations = report["recommendations"]
+
+    assert recommendations.any?, "expected recommendations for high utilization"
+
+    entry = recommendations.find { |item| item["provider"] == "vipay" && item["type"] == "limit_pressure" }
+    refute_nil entry
+    assert_equal "near_daily_limit", entry["reason"]
+    assert entry["evidence"]["utilization_pct"] >= 90.0
+    assert_match(/Провайдер vipay/, entry["message"])
+  end
+
+  def test_generates_recommendations_for_share_deviation
+    records = [
+      decision("op_1", "vipay"),
+      decision("op_2", "vipay"),
+      decision("op_3", "vipay"),
+      decision("op_4", "vipay")
+    ]
+
+    report = report_for(records)
+    recommendations = report["recommendations"]
+
+    entry = recommendations.find do |item|
+      item["provider"] == "vipay" && item["type"] == "share_deviation"
+    end
+
+    refute_nil entry
+    assert_equal "over_target_share", entry["reason"]
+    assert entry["evidence"]["signed_deviation"] > 10.0
+    assert_match(/провайдера vipay/, entry["message"])
   end
 end
