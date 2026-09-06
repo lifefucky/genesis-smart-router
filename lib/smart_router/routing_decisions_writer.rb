@@ -13,7 +13,7 @@ module SmartRouter
       raise InputError.new("routing decisions records required") if records.nil?
 
       list = records.is_a?(Array) ? records : [records]
-      payload = JSON.generate(list)
+      payload = JSON.pretty_generate(list)
       write_atomically(path, payload)
       path
     end

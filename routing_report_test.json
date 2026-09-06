@@ -1,0 +1,75 @@
+{
+  "period": "batch_run",
+  "total_operations": 10,
+  "distribution": {
+    "vipay": {
+      "count": 3,
+      "share_pct": 30.0,
+      "target_pct": 40.0,
+      "signed_deviation": -10.0,
+      "absolute_deviation": 10.0
+    },
+    "payflow": {
+      "count": 3,
+      "share_pct": 30.0,
+      "target_pct": 35.0,
+      "signed_deviation": -5.0,
+      "absolute_deviation": 5.0
+    },
+    "quickpay": {
+      "count": 3,
+      "share_pct": 30.0,
+      "target_pct": 25.0,
+      "signed_deviation": 5.0,
+      "absolute_deviation": 5.0
+    },
+    "spacepayments": {
+      "count": 1,
+      "share_pct": 10.0,
+      "target_pct": 0.0,
+      "signed_deviation": 10.0,
+      "absolute_deviation": 10.0
+    }
+  },
+  "skip_reasons": {
+    "amount_below_minimum": 2,
+    "amount_exceeds_limit": 3,
+    "bank_not_in_list": 8,
+    "provider_rejected": 2
+  },
+  "projected_daily_utilization": {
+    "vipay": {
+      "limit_amount": 5000000,
+      "used_amount": 3672000.0,
+      "utilization_pct": 73.44
+    },
+    "payflow": {
+      "limit_amount": 3000000,
+      "used_amount": 3108800.0,
+      "utilization_pct": 103.62666666666667
+    },
+    "quickpay": {
+      "limit_amount": 8000000,
+      "used_amount": 1313000.0,
+      "utilization_pct": 16.4125
+    },
+    "spacepayments": {
+      "limit_amount": null,
+      "used_amount": null,
+      "utilization_pct": null
+    }
+  },
+  "recommendations": [
+    {
+      "provider": "payflow",
+      "type": "limit_pressure",
+      "reason": "near_daily_limit",
+      "evidence": {
+        "utilization_pct": 103.62666666666667,
+        "limit_amount": 3000000,
+        "used_amount": 3108800.0
+      },
+      "message": "Провайдер payflow использует 103.63% дневного лимита (3108800.0 из 3000000). Рассмотрите снижение traffic_percentage или увеличение лимита."
+    }
+  ]
+}

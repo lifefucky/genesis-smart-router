@@ -1,0 +1,53 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+PROJECT_ROOT = File.expand_path("..", __dir__)
+
+$LOAD_PATH.unshift(File.join(PROJECT_ROOT, "lib"))
+
+require "smart_router"
+
+def usage
+  warn "Usage: bin/genesis-smart-router [QUEUE_PATH]"
+  warn "  QUEUE_PATH defaults to data/operations_queue_test.json relative to project root"
+end
+
+begin
+  queue_arg = ARGV[0]
+
+  queue_path =
+    if queue_arg.nil? || queue_arg.strip.empty?
+      File.join(PROJECT_ROOT, "data/operations_queue_test.json")
+    else
+      File.expand_path(queue_arg, Dir.pwd)
+    end
+
+  providers_path = File.join(PROJECT_ROOT, SmartRouter::DEFAULT_PROVIDERS_PATH)
+  history_path = File.join(PROJECT_ROOT, SmartRouter::DEFAULT_HISTORY_PATH)
+  root_dir = Dir.pwd
+
+  result = SmartRouter.batch_run(
+    queue_path: queue_path,
+    providers_path: providers_path,
+    history_path: history_path,
+    root_dir: root_dir
+  )
+
+  decisions = Array(result["decisions"])
+  decisions_path = result["decisions_path"]
+  report_path = result["report_path"]
+
+  puts "Успех: обработано #{decisions.length} операций."
+  puts "Файлы записаны:"
+  puts "  routing_decisions_test.json -> #{decisions_path}"
+  puts "  routing_report_test.json    -> #{report_path}"
+  exit 0
+rescue SmartRouter::InputError => e
+  warn "Ошибка входных данных: #{e.message}"
+  warn "Файлы routing_decisions_test.json и routing_report_test.json не были созданы или изменены."
+  exit 1
+rescue StandardError => e
+  warn "Неожиданная ошибка: #{e.class}: #{e.message}"
+  usage
+  exit 1
+end

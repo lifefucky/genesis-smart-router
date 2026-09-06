@@ -43,6 +43,38 @@ module SmartRouter
   rescue JSON::ParserError, EncodingError => e
     raise InputError.new("invalid JSON (#{e.message})", path: path)
   end
+
+  def self.batch_run(
+    queue_path:,
+    providers_path: DEFAULT_PROVIDERS_PATH,
+    history_path: DEFAULT_HISTORY_PATH,
+    root_dir: Dir.pwd
+  )
+    result = BatchRunner.run(
+      queue_path: queue_path,
+      providers_path: providers_path,
+      history_path: history_path,
+      root_dir: root_dir
+    )
+
+    decisions = Array(result.decisions)
+    providers = Array(result.providers)
+
+    report = ReportBuilder.build(decisions, providers, period: "batch_run")
+
+    decisions_path = File.join(root_dir, "routing_decisions_test.json")
+    report_path = File.join(root_dir, "routing_report_test.json")
+
+    RoutingDecisionsWriter.write(decisions, path: decisions_path)
+    RoutingReportWriter.write(report, path: report_path)
+
+    {
+      "decisions_path" => decisions_path,
+      "report_path" => report_path,
+      "decisions" => decisions,
+      "providers" => providers
+    }
+  end
 end
 
 require_relative "smart_router/provider"
@@ -58,6 +90,7 @@ require_relative "smart_router/report_builder"
 require_relative "smart_router/routing_report_writer"
 require_relative "smart_router/state_tracker"
 require_relative "smart_router/fallback_executor"
+require_relative "smart_router/batch_runner"
 require_relative "smart_router/policy_registry"
 require_relative "smart_router/share_state"
 require_relative "smart_router/strategies/base"
