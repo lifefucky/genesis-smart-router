@@ -1,57 +1,60 @@
 {
   "period": "batch_run",
-  "total_operations": 10,
+  "total_operations": 90,
   "distribution": {
     "vipay": {
-      "count": 3,
-      "share_pct": 30.0,
+      "count": 12,
+      "share_pct": 13.333333333333334,
       "target_pct": 40.0,
-      "signed_deviation": -10.0,
-      "absolute_deviation": 10.0
+      "signed_deviation": -26.666666666666664,
+      "absolute_deviation": 26.666666666666664
     },
     "payflow": {
-      "count": 3,
-      "share_pct": 30.0,
+      "count": 5,
+      "share_pct": 5.555555555555555,
       "target_pct": 35.0,
-      "signed_deviation": -5.0,
-      "absolute_deviation": 5.0
+      "signed_deviation": -29.444444444444443,
+      "absolute_deviation": 29.444444444444443
     },
     "quickpay": {
-      "count": 3,
-      "share_pct": 30.0,
+      "count": 20,
+      "share_pct": 22.22222222222222,
       "target_pct": 25.0,
-      "signed_deviation": 5.0,
-      "absolute_deviation": 5.0
+      "signed_deviation": -2.7777777777777786,
+      "absolute_deviation": 2.7777777777777786
     },
     "spacepayments": {
-      "count": 1,
-      "share_pct": 10.0,
+      "count": 53,
+      "share_pct": 58.888888888888886,
       "target_pct": 0.0,
-      "signed_deviation": 10.0,
-      "absolute_deviation": 10.0
+      "signed_deviation": 58.888888888888886,
+      "absolute_deviation": 58.888888888888886
     }
   },
   "skip_reasons": {
-    "amount_below_minimum": 2,
-    "amount_exceeds_limit": 3,
-    "bank_not_in_list": 8,
-    "provider_rejected": 2
+    "amount_below_minimum": 16,
+    "amount_exceeds_limit": 33,
+    "bank_not_in_list": 25,
+    "daily_limit_exceeded": 1,
+    "no_requisites": 132,
+    "provider_expired": 6,
+    "provider_rejected": 5
   },
   "projected_daily_utilization": {
     "vipay": {
       "limit_amount": 5000000,
-      "used_amount": 3672000.0,
-      "utilization_pct": 73.44
+      "used_amount": 3979000.0,
+      "utilization_pct": 79.58
     },
     "payflow": {
       "limit_amount": 3000000,
-      "used_amount": 3108800.0,
-      "utilization_pct": 103.62666666666667
+      "used_amount": 3077600.0,
+      "utilization_pct": 102.58666666666667
     },
     "quickpay": {
       "limit_amount": 8000000,
-      "used_amount": 1313000.0,
-      "utilization_pct": 16.4125
+      "used_amount": 2208000.0,
+      "utilization_pct": 27.6
     },
     "spacepayments": {
       "limit_amount": null,
@@ -65,11 +68,44 @@
       "type": "limit_pressure",
       "reason": "near_daily_limit",
       "evidence": {
-        "utilization_pct": 103.62666666666667,
+        "utilization_pct": 102.58666666666667,
         "limit_amount": 3000000,
-        "used_amount": 3108800.0
+        "used_amount": 3077600.0
       },
-      "message": "Провайдер payflow использует 103.63% дневного лимита (3108800.0 из 3000000). Рассмотрите снижение traffic_percentage или увеличение лимита."
+      "message": "Провайдер payflow использует 102.59% дневного лимита (3077600.0 из 3000000). Рассмотрите снижение traffic_percentage или увеличение лимита."
+    },
+    {
+      "provider": "payflow",
+      "type": "share_deviation",
+      "reason": "under_target_share",
+      "evidence": {
+        "share_pct": 5.555555555555555,
+        "target_pct": 35.0,
+        "signed_deviation": -29.444444444444443
+      },
+      "message": "Фактическая доля провайдера payflow (5.56%) значительно ниже целевой (35.0%). Рассмотрите повышение traffic_percentage или пересмотр стратегии распределения трафика."
+    },
+    {
+      "provider": "spacepayments",
+      "type": "share_deviation",
+      "reason": "over_target_share",
+      "evidence": {
+        "share_pct": 58.888888888888886,
+        "target_pct": 0.0,
+        "signed_deviation": 58.888888888888886
+      },
+      "message": "Фактическая доля провайдера spacepayments (58.89%) значительно выше целевой (0.0%). Рассмотрите снижение traffic_percentage или пересмотр стратегии."
+    },
+    {
+      "provider": "vipay",
+      "type": "share_deviation",
+      "reason": "under_target_share",
+      "evidence": {
+        "share_pct": 13.333333333333334,
+        "target_pct": 40.0,
+        "signed_deviation": -26.666666666666664
+      },
+      "message": "Фактическая доля провайдера vipay (13.33%) значительно ниже целевой (40.0%). Рассмотрите повышение traffic_percentage или пересмотр стратегии распределения трафика."
     }
   ]
 }
