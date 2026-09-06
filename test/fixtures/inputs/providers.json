@@ -23,7 +23,8 @@
       "exclude_banks": false,
       "provider_margin_pct": 1.2,
       "merchant_margin_pct": 1.5,
-      "allow_negative_agreement": false
+      "allow_negative_agreement": false,
+      "volume_share_pct": 40
     },
     {
       "payment_system": "payflow",
@@ -45,7 +46,8 @@
       "exclude_banks": false,
       "provider_margin_pct": 1.0,
       "merchant_margin_pct": 1.5,
-      "allow_negative_agreement": false
+      "allow_negative_agreement": false,
+      "volume_share_pct": 35
     },
     {
       "payment_system": "quickpay",
@@ -67,7 +69,8 @@
       "exclude_banks": false,
       "provider_margin_pct": 0.8,
       "merchant_margin_pct": 1.5,
-      "allow_negative_agreement": false
+      "allow_negative_agreement": false,
+      "volume_share_pct": 25
     },
     {
       "payment_system": "spacepayments",

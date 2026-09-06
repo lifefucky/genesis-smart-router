@@ -3,10 +3,15 @@
 module SmartRouter
   module Strategies
     class TrafficShare < Base
-      SCORE = 0.5
-
-      def score(_provider, _operation, _state = nil)
-        SCORE
+      def score(provider, _operation, state = nil)
+        resolved = ShareState.coerce(state)
+        ShareDeficit.score_share(
+          target_pct: provider.traffic_percentage,
+          shares: resolved.traffic_shares,
+          payment_system: provider.payment_system,
+          field: "traffic_percentage",
+          path: resolved.path
+        )
       end
     end
   end

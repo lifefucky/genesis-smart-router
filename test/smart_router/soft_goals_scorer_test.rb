@@ -251,9 +251,16 @@ class SoftGoalsScorerTest < Minitest::Test
     vipay_traffic = vipay.traffic_percentage
     payflow_traffic = payflow.traffic_percentage
 
+    state = {
+      "traffic_shares" => { "vipay" => 0.20, "payflow" => 0.80 },
+      "volume_shares" => { "vipay" => 0.20, "payflow" => 0.80 }
+    }
+    state_before = Marshal.load(Marshal.dump(state))
+
     scores = SmartRouter::SoftGoalsScorer.score(
       context.eligible_providers,
       operation: operation,
+      state: state,
       policies_path: POLICIES_FIXTURE
     )
 
@@ -264,6 +271,7 @@ class SoftGoalsScorerTest < Minitest::Test
     assert_nil context.selected_provider
     assert_equal vipay_traffic, vipay.traffic_percentage
     assert_equal payflow_traffic, payflow.traffic_percentage
+    assert_equal state_before, state
     refute_respond_to vipay, :composite=
   end
 
@@ -355,14 +363,289 @@ class SoftGoalsScorerTest < Minitest::Test
     end
   end
 
+  def test_traffic_deficit_boosts_and_surplus_penalizes
+    vipay = build_provider(payment_system: "vipay", traffic_percentage: 40)
+    payflow = build_provider(payment_system: "payflow", traffic_percentage: 35)
+    state = {
+      "traffic_shares" => { "vipay" => 0.20, "payflow" => 0.80 }
+    }
+
+    scores = score_pool([vipay, payflow], policies_path: POLICIES_FIXTURE, state: state)
+    by_name = scores.to_h { |row| [row.provider.payment_system, row] }
+
+    assert_operator by_name["vipay"].parts["traffic_share"], :>=, 0.7
+    assert_operator by_name["payflow"].parts["traffic_share"], :<=, 0.3
+    assert_in_delta 0.5, by_name["vipay"].parts["volume_share"]
+    assert_in_delta 0.5, by_name["payflow"].parts["volume_share"]
+    assert_operator by_name["vipay"].composite, :>, by_name["payflow"].composite
+  end
+
+  def test_volume_deficit_boosts_and_surplus_penalizes
+    vipay = build_provider(
+      payment_system: "vipay",
+      traffic_percentage: 40,
+      volume_share_pct: 40
+    )
+    payflow = build_provider(
+      payment_system: "payflow",
+      traffic_percentage: 35,
+      volume_share_pct: 35
+    )
+    state = {
+      "volume_shares" => { "vipay" => 0.10, "payflow" => 0.90 }
+    }
+
+    scores = score_pool([vipay, payflow], policies_path: POLICIES_FIXTURE, state: state)
+    by_name = scores.to_h { |row| [row.provider.payment_system, row] }
+
+    assert_operator by_name["vipay"].parts["volume_share"], :>, 0.5
+    assert_operator by_name["payflow"].parts["volume_share"], :<, 0.5
+    assert_in_delta 0.5, by_name["vipay"].parts["traffic_share"]
+    assert_in_delta 0.5, by_name["payflow"].parts["traffic_share"]
+    assert_operator by_name["vipay"].composite, :>, by_name["payflow"].composite
+  end
+
+  def test_near_target_stays_near_neutral
+    vipay = build_provider(
+      payment_system: "vipay",
+      traffic_percentage: 40,
+      volume_share_pct: 40
+    )
+    payflow = build_provider(
+      payment_system: "payflow",
+      traffic_percentage: 40,
+      volume_share_pct: 40
+    )
+    state = {
+      "traffic_shares" => { "vipay" => 0.38, "payflow" => 0.42 },
+      "volume_shares" => { "vipay" => 0.42, "payflow" => 0.38 }
+    }
+
+    scores = score_pool([vipay, payflow], policies_path: POLICIES_FIXTURE, state: state)
+    scores.each do |row|
+      assert_in_delta 0.5, row.parts["traffic_share"], 0.05
+      assert_in_delta 0.5, row.parts["volume_share"], 0.05
+      assert_operator row.parts["traffic_share"], :>=, 0.45
+      assert_operator row.parts["traffic_share"], :<=, 0.55
+      assert_operator row.parts["volume_share"], :>=, 0.45
+      assert_operator row.parts["volume_share"], :<=, 0.55
+    end
+  end
+
+  def test_missing_or_zero_actual_shares_are_neutral
+    vipay = build_provider(
+      payment_system: "vipay",
+      traffic_percentage: 40,
+      volume_share_pct: 40
+    )
+    payflow = build_provider(
+      payment_system: "payflow",
+      traffic_percentage: 35,
+      volume_share_pct: 35
+    )
+
+    [
+      nil,
+      {},
+      { "traffic_shares" => {}, "volume_shares" => {} },
+      { "traffic_shares" => { "vipay" => 0.0, "payflow" => 0.0 },
+        "volume_shares" => { "vipay" => 0.0, "payflow" => 0.0 } }
+    ].each do |state|
+      scores = score_pool([vipay, payflow], policies_path: POLICIES_FIXTURE, state: state)
+      scores.each do |row|
+        assert_in_delta 0.5, row.parts["traffic_share"]
+        assert_in_delta 0.5, row.parts["volume_share"]
+        assert_in_delta 0.5, row.composite
+      end
+    end
+  end
+
+  def test_invalid_traffic_target_raises_input_error
+    vipay = build_provider(payment_system: "vipay", traffic_percentage: 150)
+    path = File.join(FIXTURES, "providers.json")
+    state = {
+      "traffic_shares" => { "vipay" => 0.20 },
+      "path" => path
+    }
+
+    error = assert_raises(SmartRouter::InputError) do
+      score_pool([vipay], policies_path: POLICIES_FIXTURE, state: state)
+    end
+    assert_equal path, error.path
+    assert_includes error.message, path
+    assert_includes error.message, "traffic_percentage"
+  end
+
+  def test_invalid_volume_target_raises_input_error
+    vipay = build_provider(
+      payment_system: "vipay",
+      volume_share_pct: -5
+    )
+    path = File.join(FIXTURES, "providers.json")
+    state = {
+      "volume_shares" => { "vipay" => 0.20 },
+      "path" => path
+    }
+
+    error = assert_raises(SmartRouter::InputError) do
+      score_pool([vipay], policies_path: POLICIES_FIXTURE, state: state)
+    end
+    assert_equal path, error.path
+    assert_includes error.message, path
+    assert_includes error.message, "volume_share_pct"
+  end
+
+  def test_invalid_actual_share_raises_input_error_without_partial_result
+    vipay = build_provider(payment_system: "vipay", traffic_percentage: 40)
+    payflow = build_provider(payment_system: "payflow", traffic_percentage: 35)
+    path = File.join(FIXTURES, "providers.json")
+    state = {
+      "traffic_shares" => { "vipay" => 0.20, "payflow" => 1.5 },
+      "path" => path
+    }
+
+    error = assert_raises(SmartRouter::InputError) do
+      score_pool([vipay, payflow], policies_path: POLICIES_FIXTURE, state: state)
+    end
+    assert_equal path, error.path
+    assert_includes error.message, path
+    assert_includes error.message, "traffic_shares"
+  end
+
+  def test_false_share_map_raises_input_error
+    vipay = build_provider(payment_system: "vipay", traffic_percentage: 40)
+    path = File.join(FIXTURES, "providers.json")
+    state = { "traffic_shares" => false, "path" => path }
+
+    error = assert_raises(SmartRouter::InputError) do
+      score_pool([vipay], policies_path: POLICIES_FIXTURE, state: state)
+    end
+    assert_equal path, error.path
+    assert_includes error.message, "traffic_shares"
+  end
+
+  def test_blank_share_key_raises_input_error
+    vipay = build_provider(payment_system: "vipay", traffic_percentage: 40)
+    path = File.join(FIXTURES, "providers.json")
+    state = { "traffic_shares" => { "" => 1.0 }, "path" => path }
+
+    error = assert_raises(SmartRouter::InputError) do
+      score_pool([vipay], policies_path: POLICIES_FIXTURE, state: state)
+    end
+    assert_equal path, error.path
+    assert_includes error.message, "payment_system"
+  end
+
+  def test_duplicate_share_keys_raise_input_error
+    vipay = build_provider(payment_system: "vipay", traffic_percentage: 40)
+    path = File.join(FIXTURES, "providers.json")
+    state = {
+      "traffic_shares" => { "vipay" => 0.2, :vipay => 0.8 },
+      "path" => path
+    }
+
+    error = assert_raises(SmartRouter::InputError) do
+      score_pool([vipay], policies_path: POLICIES_FIXTURE, state: state)
+    end
+    assert_equal path, error.path
+    assert_includes error.message, "duplicate"
+  end
+
+  def test_non_finite_actual_share_raises_input_error
+    vipay = build_provider(payment_system: "vipay", traffic_percentage: 40)
+    path = File.join(FIXTURES, "providers.json")
+
+    [Float::NAN, Float::INFINITY, -Float::INFINITY].each do |invalid|
+      state = {
+        "volume_shares" => { "vipay" => invalid },
+        "path" => path
+      }
+      error = assert_raises(SmartRouter::InputError) do
+        score_pool([vipay], policies_path: POLICIES_FIXTURE, state: state)
+      end
+      assert_equal path, error.path
+      assert_includes error.message, path
+    end
+  end
+
+  def test_invalid_volume_share_pct_type_raises_on_load
+    error = assert_raises(SmartRouter::InputError) do
+      build_provider(volume_share_pct: "forty")
+    end
+    assert_equal "test", error.path
+    assert_includes error.message, "volume_share_pct"
+  end
+
+  def test_missing_volume_share_pct_is_optional_and_neutral
+    vipay = build_provider(payment_system: "vipay", traffic_percentage: 40)
+    assert_nil vipay.volume_share_pct
+
+    score = SmartRouter::Strategies::VolumeShare.new.score(
+      vipay,
+      build_operation,
+      { "volume_shares" => { "vipay" => 0.10 } }
+    )
+    assert_in_delta 0.5, score
+  end
+
+  def test_spacepayments_without_volume_goal_stays_neutral
+    space = build_provider(payment_system: "spacepayments", traffic_percentage: 0)
+    vipay = build_provider(payment_system: "vipay", traffic_percentage: 40)
+    assert_nil space.volume_share_pct
+
+    scores = score_pool(
+      [vipay, space],
+      policies_path: POLICIES_FIXTURE,
+      state: {
+        "traffic_shares" => { "vipay" => 0.20, "spacepayments" => 0.80 }
+      }
+    )
+    by_name = scores.to_h { |row| [row.provider.payment_system, row] }
+
+    assert_in_delta 0.5, by_name["spacepayments"].parts["traffic_share"]
+    assert_in_delta 0.5, by_name["spacepayments"].parts["volume_share"]
+    assert_operator by_name["vipay"].parts["traffic_share"], :>, 0.5
+  end
+
+  def test_fixture_providers_expose_volume_share_pct
+    catalog = SmartRouter::RoutingConfig.load(File.join(FIXTURES, "providers.json"))
+    by_name = catalog.to_h { |provider| [provider.payment_system, provider] }
+
+    assert_equal 40, by_name["vipay"].volume_share_pct
+    assert_equal 35, by_name["payflow"].volume_share_pct
+    assert_equal 25, by_name["quickpay"].volume_share_pct
+    assert_nil by_name["spacepayments"].volume_share_pct
+  end
+
+  def test_share_scores_are_deterministic_and_clipped
+    vipay = build_provider(
+      payment_system: "vipay",
+      traffic_percentage: 90,
+      volume_share_pct: 10
+    )
+    state = {
+      "traffic_shares" => { "vipay" => 0.0, "payflow" => 1.0 },
+      "volume_shares" => { "vipay" => 1.0 }
+    }
+
+    first = score_pool([vipay], policies_path: POLICIES_FIXTURE, state: state).first
+    second = score_pool([vipay], policies_path: POLICIES_FIXTURE, state: state).first
+
+    assert_in_delta first.parts["traffic_share"], second.parts["traffic_share"]
+    assert_in_delta first.parts["volume_share"], second.parts["volume_share"]
+    assert_in_delta 1.0, first.parts["traffic_share"]
+    assert_in_delta 0.0, first.parts["volume_share"]
+  end
+
   private
 
-  def score_pool(eligible, policies_path:, strategies: {})
+  def score_pool(eligible, policies_path:, strategies: {}, state: nil)
     SmartRouter::SoftGoalsScorer.score(
       eligible,
       operation: build_operation,
       policies_path: policies_path,
-      strategies: strategies
+      strategies: strategies,
+      state: state
     )
   end
 

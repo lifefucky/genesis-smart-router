@@ -48,13 +48,15 @@ module SmartRouter
 
     BOOLEAN_KEYS = %w[exclude_banks allow_negative_agreement].freeze
 
+    OPTIONAL_NUMERIC_KEYS = %w[volume_share_pct].freeze
+
     attr_reader :payment_system, :status, :priority, :traffic_percentage,
                 :limit_amount_min, :limit_amount_max, :daily_amount_limit,
                 :daily_approved_amount, :in_progress_count_limit, :in_progress_count,
                 :in_progress_amount_limit, :in_progress_amount, :available_requisites,
                 :conversion_24h, :avg_latency_sec, :banks, :exclude_banks,
                 :provider_margin_pct, :merchant_margin_pct, :allow_negative_agreement,
-                :note
+                :volume_share_pct, :note
 
     def self.from_hash(hash, path:)
       unless hash.is_a?(Hash)
@@ -71,6 +73,7 @@ module SmartRouter
       require_present_string(raw["status"], "status", path: path)
       LIMIT_KEYS.each { |key| require_optional_number(raw[key], key, path: path) }
       NUMERIC_KEYS.each { |key| require_number(raw[key], key, path: path) }
+      OPTIONAL_NUMERIC_KEYS.each { |key| require_optional_number(raw[key], key, path: path) }
       unless raw["banks"].is_a?(Array)
         raise InputError.new("banks must be an array", path: path)
       end
@@ -101,6 +104,7 @@ module SmartRouter
       @provider_margin_pct = raw.fetch("provider_margin_pct")
       @merchant_margin_pct = raw.fetch("merchant_margin_pct")
       @allow_negative_agreement = raw.fetch("allow_negative_agreement")
+      @volume_share_pct = raw["volume_share_pct"]
       @note = raw["note"]
     end
 
@@ -126,6 +130,7 @@ module SmartRouter
         "provider_margin_pct" => provider_margin_pct,
         "merchant_margin_pct" => merchant_margin_pct,
         "allow_negative_agreement" => allow_negative_agreement,
+        "volume_share_pct" => volume_share_pct,
         "note" => note
       )
     end

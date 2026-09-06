@@ -3,6 +3,15 @@
 module SmartRouter
   ProviderScore = Data.define(:provider, :composite, :parts)
 
+  # Soft scoring over an already-filtered eligible pool.
+  # +state+ is read-only actual-share context, either nil, ShareState, or a Hash:
+  #   {
+  #     "traffic_shares" => { "<payment_system>" => 0.0..1.0, ... },
+  #     "volume_shares"  => { "<payment_system>" => 0.0..1.0, ... },
+  #     "path"           => optional InputError path (default "state")
+  #   }
+  # nil, missing maps, or all-zero shares mean no observed data (neutral 0.5).
+  # Share maps are used as provided (already normalized); they are not re-weighted.
   class SoftGoalsScorer
     DEFAULT_STRATEGIES = {
       "traffic_share" => Strategies::TrafficShare.new,
@@ -27,6 +36,7 @@ module SmartRouter
 
       registry = PolicyRegistry.load(@policies_path)
       active = registry.active_policies
+      resolved_state = ShareState.coerce(state)
 
       eligible_providers.map do |provider|
         parts = {}
@@ -41,7 +51,7 @@ module SmartRouter
             )
           end
           value = validate_score!(
-            strategy.score(provider, operation, state),
+            strategy.score(provider, operation, resolved_state),
             policy.name,
             path: @policies_path
           )
