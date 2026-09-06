@@ -13,7 +13,18 @@ module SmartRouter
 
     attr_reader :path, :policies
 
+    @cache = {}
+
+    def self.clear_cache!
+      @cache = {}
+    end
+
     def self.load(path = DEFAULT_ROUTING_POLICIES_PATH)
+      path = path.to_s
+
+      cached = @cache[path]
+      return cached if cached
+
       contents = SmartRouter.read_file(path)
       data =
         begin
@@ -37,7 +48,9 @@ module SmartRouter
         [name, parse_entry(name, raw_strategies[name], path: path)]
       end
 
-      new(path: path, policies: policies)
+      registry = new(path: path, policies: policies)
+      @cache[path] = registry
+      registry
     end
 
     def initialize(path:, policies:)

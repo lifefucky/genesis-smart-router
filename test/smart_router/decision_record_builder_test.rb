@@ -62,8 +62,8 @@ class DecisionRecordBuilderTest < Minitest::Test
     context = selected_context
     record = SmartRouter::DecisionRecordBuilder.build(context)
 
-    assert_equal %w[operation_id selected_provider attempts simulated_result latency_sec],
-                 record.keys
+    required = %w[operation_id selected_provider attempts simulated_result latency_sec]
+    assert_equal required.sort, (record.keys & required).sort
     assert_equal "op_test", record["operation_id"]
     assert_equal "quickpay", record["selected_provider"]
     assert_kind_of Array, record["attempts"]
@@ -173,6 +173,137 @@ class DecisionRecordBuilderTest < Minitest::Test
     assert_equal "payflow", record["selected_provider"]
     assert_equal "payflow", context.selected_provider.payment_system
     assert_equal 1, record["attempts"].length
+  end
+
+  def test_invalid_soft_goal_variance_payload_raises_input_error
+    builder = SmartRouter::DecisionRecordBuilder.new
+
+    error = assert_raises(SmartRouter::InputError) do
+      builder.__send__(
+        :validate_soft_goal_variances!,
+        [{ "goal" => "", "cause" => "target_provider_ineligible" }],
+        path: "config/routing_policies.yml"
+      )
+    end
+
+    assert_includes error.message, "soft_goal_variances entry missing goal"
+    assert_equal "config/routing_policies.yml", error.path
+  end
+
+  def test_soft_goal_variances_absent_when_all_goals_satisfied
+    context = selected_context(
+      provider: build_provider(
+        traffic_percentage: 60,
+        "conversion_24h" => 0.9
+      )
+    )
+
+    record = SmartRouter::DecisionRecordBuilder.build(context)
+
+    assert_nil record["soft_goal_variances"]
+  end
+
+  def test_soft_goal_variances_marks_target_provider_ineligible_for_traffic_share
+    vipay = build_provider(
+      payment_system: "vipay",
+      traffic_percentage: 70,
+      limit_amount_max: 1_000
+    )
+    quickpay = build_provider(
+      payment_system: "quickpay",
+      traffic_percentage: 50,
+      limit_amount_max: 10_000
+    )
+    operation = build_operation(amount: 2_000)
+
+    context = SmartRouter::PipelineContext.for(operation, providers: [vipay, quickpay])
+    SmartRouter::HardConstraintsFilter.filter(context)
+    SmartRouter::BaselineSelector.select(context)
+
+    record = SmartRouter::DecisionRecordBuilder.build(context)
+
+    variances = record["soft_goal_variances"]
+    refute_nil variances
+    assert_kind_of Array, variances
+
+    traffic_variance = variances.find do |entry|
+      entry["goal"] == "traffic_share" && entry["target_provider"] == "vipay"
+    end
+    refute_nil traffic_variance
+    assert_equal "target_provider_ineligible", traffic_variance["cause"]
+  end
+
+  def test_soft_goal_variances_marks_higher_priority_goal_conflict_for_traffic_share
+    vipay = build_provider(
+      payment_system: "vipay",
+      priority: 2,
+      traffic_percentage: 80,
+      conversion_24h: 0.1
+    )
+    quickpay = build_provider(
+      payment_system: "quickpay",
+      priority: 1,
+      traffic_percentage: 20,
+      conversion_24h: 0.9
+    )
+    operation = build_operation(amount: 500)
+
+    context = SmartRouter::PipelineContext.for(operation, providers: [vipay, quickpay])
+    SmartRouter::HardConstraintsFilter.filter(context)
+    SmartRouter::BaselineSelector.select(context)
+
+    state = {
+      "traffic_shares" => {
+        "vipay" => 0.1,
+        "quickpay" => 0.9
+      },
+      "volume_shares" => {},
+      "path" => "state_test"
+    }
+
+    record = SmartRouter::DecisionRecordBuilder.build(context, state: state)
+
+    variances = record["soft_goal_variances"]
+    refute_nil variances
+    assert_kind_of Array, variances
+
+    traffic_variance = variances.find do |entry|
+      entry["goal"] == "traffic_share" && entry["target_provider"] == "vipay"
+    end
+    refute_nil traffic_variance
+    assert_equal "higher_priority_goal_conflict", traffic_variance["cause"]
+  end
+
+  def test_soft_goal_variances_marks_execution_failed_for_traffic_share
+    vipay = build_provider(
+      payment_system: "vipay",
+      traffic_percentage: 80,
+      limit_amount_max: 10_000
+    )
+    quickpay = build_provider(
+      payment_system: "quickpay",
+      priority: 1,
+      traffic_percentage: 20,
+      limit_amount_max: 10_000
+    )
+    operation = build_operation(amount: 500)
+
+    context = SmartRouter::PipelineContext.for(operation, providers: [vipay, quickpay])
+    SmartRouter::HardConstraintsFilter.filter(context)
+    SmartRouter::BaselineSelector.select(context)
+    context.add_attempt("vipay", "skipped", "provider_rejected")
+
+    record = SmartRouter::DecisionRecordBuilder.build(context)
+
+    variances = record["soft_goal_variances"]
+    refute_nil variances
+    assert_kind_of Array, variances
+
+    traffic_variance = variances.find do |entry|
+      entry["goal"] == "traffic_share" && entry["target_provider"] == "vipay"
+    end
+    refute_nil traffic_variance
+    assert_equal "target_provider_execution_failed", traffic_variance["cause"]
   end
 
   private
