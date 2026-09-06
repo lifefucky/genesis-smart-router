@@ -299,6 +299,62 @@ class SoftGoalsScorerTest < Minitest::Test
     assert_in_delta 1.0, scores.first.composite
   end
 
+  def test_default_policies_path_loads_shipped_config
+    vipay = build_provider(payment_system: "vipay")
+    payflow = build_provider(payment_system: "payflow")
+    root = File.expand_path("../..", __dir__)
+
+    scores = Dir.chdir(root) do
+      SmartRouter::SoftGoalsScorer.score([vipay, payflow], operation: build_operation)
+    end
+
+    assert_equal 2, scores.length
+    scores.each do |row|
+      assert_in_delta 0.5, row.composite
+      assert_equal(
+        %w[traffic_share volume_share conversion_rate financial_commitment],
+        row.parts.keys
+      )
+    end
+  end
+
+  def test_shipped_policies_match_fixture
+    root = File.expand_path("../..", __dir__)
+    shipped = YAML.safe_load(
+      File.read(File.join(root, SmartRouter::DEFAULT_ROUTING_POLICIES_PATH)),
+      permitted_classes: [],
+      aliases: false
+    )
+    fixture = YAML.safe_load(
+      File.read(POLICIES_FIXTURE),
+      permitted_classes: [],
+      aliases: false
+    )
+    assert_equal shipped, fixture
+  end
+
+  def test_missing_strategy_implementation_raises_input_error
+    vipay = build_provider(payment_system: "vipay")
+
+    error = nil
+    with_policies(
+      "strategies" => {
+        "traffic_share" => { "enabled" => true, "weight" => 1.0 }
+      }
+    ) do |path|
+      error = assert_raises(SmartRouter::InputError) do
+        score_pool(
+          [vipay],
+          policies_path: path,
+          strategies: { "traffic_share" => nil }
+        )
+      end
+      assert_equal path, error.path
+      assert_includes error.message, path
+      assert_includes error.message, "traffic_share"
+    end
+  end
+
   private
 
   def score_pool(eligible, policies_path:, strategies: {})

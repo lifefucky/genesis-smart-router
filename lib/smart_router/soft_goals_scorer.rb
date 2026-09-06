@@ -33,7 +33,13 @@ module SmartRouter
         composite = 0.0
 
         active.each do |policy|
-          strategy = @strategies.fetch(policy.name)
+          strategy = @strategies[policy.name]
+          if strategy.nil?
+            raise InputError.new(
+              "missing strategy implementation for #{policy.name}",
+              path: @policies_path
+            )
+          end
           value = validate_score!(
             strategy.score(provider, operation, state),
             policy.name,
