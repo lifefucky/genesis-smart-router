@@ -353,7 +353,7 @@ class FallbackExecutorTest < Minitest::Test
     end
   end
 
-  def test_spacepayments_failure_after_externals_raises_input_error
+  def test_spacepayments_failure_after_externals_selects_self
     external = build_provider(payment_system: "quickpay", priority: 3, conversion_24h: 1.0)
     self_provider = build_self_provider(conversion_24h: 1.0)
     context, tracker = context_with(
@@ -370,18 +370,15 @@ class FallbackExecutorTest < Minitest::Test
       "rejected"
     end
 
-    error = assert_raises(SmartRouter::InputError) do
-      SmartRouter::FallbackExecutor.execute(context, tracker: tracker)
-    end
+    SmartRouter::FallbackExecutor.execute(context, tracker: tracker)
 
-    assert_includes error.message, "no eligible providers"
-    assert_nil context.selected_provider
+    assert_equal "spacepayments", context.selected_provider.payment_system
+    assert_equal "self_provider_fallback", context.selection_reason
     assert_equal %w[quickpay spacepayments], called
-    refute(context.attempts.any? { |attempt| attempt["decision"] == "selected" })
     assert_equal(
       [
         { "provider" => "quickpay", "decision" => "skipped", "reason" => "provider_rejected" },
-        { "provider" => "spacepayments", "decision" => "skipped", "reason" => "provider_rejected" }
+        { "provider" => "spacepayments", "decision" => "selected", "reason" => "self_provider_fallback" }
       ],
       context.attempts
     )

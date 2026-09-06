@@ -210,7 +210,7 @@ RUBY
 Особенности этого прогона:
 
 - `data/operations_history.csv` на этой стадии обязателен и валидируется как часть входного контракта;
-- при сломанных входах, пустом пуле без активного `spacepayments` или исчерпании каскада без `approved` — прогон останавливается `SmartRouter::InputError`;
+- при сломанных входах или пустом пуле без активного `spacepayments` — прогон останавливается `SmartRouter::InputError`;
 - heredoc сначала собирает весь массив `records` в памяти и только потом пишет файл; если на любой операции случится `InputError`, итоговый `tmp/routing_decisions.json` не будет записан.
 
 Для быстрого просмотра результата:
@@ -228,8 +228,7 @@ ruby -rjson -e 'puts JSON.pretty_generate(JSON.parse(File.read("tmp/routing_deci
 - missing keys во входной операции или каталоге провайдеров;
 - non-numeric fields там, где ожидается число;
 - invalid timestamps, если `created_at` не проходит ISO 8601 parsing;
-- пустой eligible-пул после hard-filter и нет активного `spacepayments` в working-set;
-- каскад внешних и last-resort `spacepayments` исчерпан без `approved`.
+- пустой eligible-пул после hard-filter и нет активного `spacepayments` в working-set.
 
 ## Лицензия
 

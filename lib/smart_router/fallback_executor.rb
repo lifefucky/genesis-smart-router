@@ -39,6 +39,13 @@ module SmartRouter
           context.add_attempt(provider, "selected", reason)
           return context
         when "rejected", "expired"
+          if provider.payment_system == "spacepayments"
+            context.selected_provider = provider
+            context.selection_reason = "self_provider_fallback"
+            context.add_attempt(provider, "selected", "self_provider_fallback")
+            return context
+          end
+
           context.add_attempt(provider, "skipped", EXECUTION_SKIP_REASONS.fetch(outcome))
         end
       end
