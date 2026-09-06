@@ -30,8 +30,8 @@ class SoftGoalsScorerTest < Minitest::Test
   end
 
   def test_equal_weights_composite_is_half_and_parts_has_four_keys
-    vipay = build_provider(payment_system: "vipay")
-    payflow = build_provider(payment_system: "payflow")
+    vipay = build_neutral_soft_provider(payment_system: "vipay")
+    payflow = build_neutral_soft_provider(payment_system: "payflow")
 
     scores = score_pool([vipay, payflow], policies_path: POLICIES_FIXTURE)
 
@@ -74,7 +74,7 @@ class SoftGoalsScorerTest < Minitest::Test
   end
 
   def test_disabled_strategy_omitted_from_parts_and_composite
-    vipay = build_provider(payment_system: "vipay")
+    vipay = build_neutral_soft_provider(payment_system: "vipay")
 
     scores = with_policies(
       "strategies" => {
@@ -90,6 +90,9 @@ class SoftGoalsScorerTest < Minitest::Test
     parts = scores.first.parts
     refute parts.key?("conversion_rate")
     assert_equal %w[traffic_share volume_share financial_commitment], parts.keys
+    assert_in_delta 0.5, parts["traffic_share"]
+    assert_in_delta 0.5, parts["volume_share"]
+    assert_in_delta 0.5, parts["financial_commitment"]
     assert_in_delta 0.375, scores.first.composite
   end
 
@@ -308,8 +311,8 @@ class SoftGoalsScorerTest < Minitest::Test
   end
 
   def test_default_policies_path_loads_shipped_config
-    vipay = build_provider(payment_system: "vipay")
-    payflow = build_provider(payment_system: "payflow")
+    vipay = build_neutral_soft_provider(payment_system: "vipay")
+    payflow = build_neutral_soft_provider(payment_system: "payflow")
     root = File.expand_path("../..", __dir__)
 
     scores = Dir.chdir(root) do
@@ -323,6 +326,10 @@ class SoftGoalsScorerTest < Minitest::Test
         %w[traffic_share volume_share conversion_rate financial_commitment],
         row.parts.keys
       )
+      assert_in_delta 0.5, row.parts["traffic_share"]
+      assert_in_delta 0.5, row.parts["volume_share"]
+      assert_in_delta 0.5, row.parts["conversion_rate"]
+      assert_in_delta 0.5, row.parts["financial_commitment"]
     end
   end
 
@@ -433,12 +440,12 @@ class SoftGoalsScorerTest < Minitest::Test
   end
 
   def test_missing_or_zero_actual_shares_are_neutral
-    vipay = build_provider(
+    vipay = build_neutral_soft_provider(
       payment_system: "vipay",
       traffic_percentage: 40,
       volume_share_pct: 40
     )
-    payflow = build_provider(
+    payflow = build_neutral_soft_provider(
       payment_system: "payflow",
       traffic_percentage: 35,
       volume_share_pct: 35
@@ -510,6 +517,349 @@ class SoftGoalsScorerTest < Minitest::Test
     assert_equal path, error.path
     assert_includes error.message, path
     assert_includes error.message, "traffic_shares"
+  end
+
+  def test_conversion_rate_boosts_higher_conversion_provider
+    vipay = build_provider(payment_system: "vipay", conversion_24h: 0.70)
+    payflow = build_provider(payment_system: "payflow", conversion_24h: 0.95)
+
+    scores = with_policies(
+      "strategies" => {
+        "conversion_rate" => { "enabled" => true, "weight" => 1.0 }
+      }
+    ) do |path|
+      score_pool([vipay, payflow], policies_path: path)
+    end
+
+    by_name = scores.to_h { |row| [row.provider.payment_system, row] }
+    assert_operator by_name["payflow"].parts["conversion_rate"], :>, by_name["vipay"].parts["conversion_rate"]
+    assert_in_delta by_name["payflow"].parts["conversion_rate"], 0.95
+    assert_in_delta by_name["vipay"].parts["conversion_rate"], 0.70
+    assert_operator by_name["payflow"].composite, :>, by_name["vipay"].composite
+  end
+
+  def test_conversion_rate_accepts_zero_and_one
+    zero = build_provider(payment_system: "vipay", conversion_24h: 0.0)
+    full = build_provider(payment_system: "payflow", conversion_24h: 1.0)
+
+    scores = with_conversion_only do |policies_path|
+      score_pool([zero, full], policies_path: policies_path)
+    end
+
+    by_name = scores.to_h { |row| [row.provider.payment_system, row] }
+    assert_in_delta 0.0, by_name["vipay"].parts["conversion_rate"]
+    assert_in_delta 1.0, by_name["payflow"].parts["conversion_rate"]
+  end
+
+  def test_nil_conversion_returns_neutral
+    vipay = build_unchecked_provider(payment_system: "vipay", conversion_24h: nil)
+
+    scores = with_conversion_only do |policies_path|
+      score_pool([vipay], policies_path: policies_path, state: catalog_state)
+    end
+
+    assert_in_delta 0.5, scores.first.parts["conversion_rate"]
+    assert_in_delta 0.5, scores.first.composite
+  end
+
+  def test_invalid_conversion_value_raises_input_error
+    vipay = build_provider(payment_system: "vipay", conversion_24h: 1.5)
+    path = File.join(FIXTURES, "providers.json")
+
+    error = nil
+    with_conversion_only do |policies_path|
+      error = assert_raises(SmartRouter::InputError) do
+        score_pool([vipay], policies_path: policies_path, state: catalog_state(path))
+      end
+      assert_equal path, error.path
+      assert_includes error.message, path
+      assert_includes error.message, "conversion_24h"
+    end
+    refute_nil error
+  end
+
+  def test_non_finite_or_negative_conversion_raises_without_partial_result
+    valid = build_provider(payment_system: "vipay", conversion_24h: 0.90)
+    path = File.join(FIXTURES, "providers.json")
+
+    [Float::NAN, Float::INFINITY, -Float::INFINITY, -0.1].each do |invalid|
+      broken = build_unchecked_provider(payment_system: "payflow", conversion_24h: invalid)
+      error = nil
+      with_conversion_only do |policies_path|
+        error = assert_raises(SmartRouter::InputError) do
+          score_pool(
+            [valid, broken],
+            policies_path: policies_path,
+            state: catalog_state(path)
+          )
+        end
+      end
+      assert_equal path, error.path
+      assert_includes error.message, path
+      assert_includes error.message, "conversion_24h"
+    end
+  end
+
+  def test_amount_band_prefers_center_of_range
+    vipay = build_provider(
+      payment_system: "vipay",
+      limit_amount_min: 1_000,
+      limit_amount_max: 100_000,
+      daily_amount_limit: 5_000_000,
+      daily_approved_amount: 1_000_000
+    )
+    payflow = build_provider(
+      payment_system: "payflow",
+      limit_amount_min: 500,
+      limit_amount_max: 50_000,
+      daily_amount_limit: 5_000_000,
+      daily_approved_amount: 1_000_000
+    )
+    operation = build_operation(amount: 90_000)
+
+    scores = with_policies(
+      "strategies" => {
+        "financial_commitment" => { "enabled" => true, "weight" => 1.0 }
+      }
+    ) do |path|
+      SmartRouter::SoftGoalsScorer.score(
+        [vipay, payflow],
+        operation: operation,
+        policies_path: path
+      )
+    end
+
+    by_name = scores.to_h { |row| [row.provider.payment_system, row] }
+    assert_operator by_name["vipay"].parts["financial_commitment"], :>, 0.5
+    assert_in_delta 0.5, by_name["payflow"].parts["financial_commitment"]
+    assert_operator by_name["vipay"].composite, :>, by_name["payflow"].composite
+  end
+
+  def test_overlapping_bands_stay_at_least_neutral
+    vipay = build_provider(
+      payment_system: "vipay",
+      limit_amount_min: 1_000,
+      limit_amount_max: 100_000,
+      daily_amount_limit: 5_000_000,
+      daily_approved_amount: 0
+    )
+    payflow = build_provider(
+      payment_system: "payflow",
+      limit_amount_min: 1_000,
+      limit_amount_max: 200_000,
+      daily_amount_limit: 5_000_000,
+      daily_approved_amount: 0
+    )
+    operation = build_operation(amount: 50_000)
+
+    scores = with_financial_only do |path|
+      SmartRouter::SoftGoalsScorer.score(
+        [vipay, payflow],
+        operation: operation,
+        policies_path: path
+      )
+    end
+
+    by_name = scores.to_h { |row| [row.provider.payment_system, row] }
+    assert_operator by_name["vipay"].parts["financial_commitment"], :>, 0.5
+    assert_operator by_name["payflow"].parts["financial_commitment"], :>, 0.5
+    assert_operator(
+      by_name["vipay"].parts["financial_commitment"],
+      :>,
+      by_name["payflow"].parts["financial_commitment"]
+    )
+  end
+
+  def test_more_daily_headroom_raises_financial_commitment
+    closer = build_provider(
+      payment_system: "vipay",
+      limit_amount_min: 1_000,
+      limit_amount_max: 100_000,
+      daily_amount_limit: 1_000_000,
+      daily_approved_amount: 100_000
+    )
+    tighter = build_provider(
+      payment_system: "payflow",
+      limit_amount_min: 1_000,
+      limit_amount_max: 100_000,
+      daily_amount_limit: 1_000_000,
+      daily_approved_amount: 900_000
+    )
+    operation = build_operation(amount: 50_500)
+
+    scores = with_financial_only do |path|
+      SmartRouter::SoftGoalsScorer.score(
+        [closer, tighter],
+        operation: operation,
+        policies_path: path
+      )
+    end
+
+    by_name = scores.to_h { |row| [row.provider.payment_system, row] }
+    assert_operator(
+      by_name["vipay"].parts["financial_commitment"],
+      :>,
+      by_name["payflow"].parts["financial_commitment"]
+    )
+  end
+
+  def test_spacepayments_financial_commitment_is_exactly_neutral
+    space = build_provider(
+      payment_system: "spacepayments",
+      limit_amount_min: 1_000,
+      limit_amount_max: 100_000,
+      daily_amount_limit: 5_000_000,
+      daily_approved_amount: 0
+    )
+    operation = build_operation(amount: 50_500)
+
+    scores = with_financial_only do |path|
+      SmartRouter::SoftGoalsScorer.score(
+        [space],
+        operation: operation,
+        policies_path: path
+      )
+    end
+
+    assert_in_delta 0.5, scores.first.parts["financial_commitment"]
+  end
+
+  def test_missing_amount_band_signal_is_neutral
+    vipay = build_provider(
+      payment_system: "vipay",
+      limit_amount_min: nil,
+      limit_amount_max: nil,
+      daily_amount_limit: 5_000_000,
+      daily_approved_amount: 0
+    )
+
+    scores = with_financial_only do |path|
+      score_pool([vipay], policies_path: path)
+    end
+
+    assert_in_delta 0.5, scores.first.parts["financial_commitment"]
+  end
+
+  def test_zero_min_bound_is_kept_and_zero_daily_limit_has_no_headroom
+    with_zero_min = build_provider(
+      payment_system: "vipay",
+      limit_amount_min: 0,
+      limit_amount_max: 100_000,
+      daily_amount_limit: 1_000_000,
+      daily_approved_amount: 0
+    )
+    zero_daily = build_provider(
+      payment_system: "payflow",
+      limit_amount_min: 1_000,
+      limit_amount_max: 100_000,
+      daily_amount_limit: 0,
+      daily_approved_amount: 0
+    )
+    operation = build_operation(amount: 50_000)
+
+    scores = with_financial_only do |path|
+      SmartRouter::SoftGoalsScorer.score(
+        [with_zero_min, zero_daily],
+        operation: operation,
+        policies_path: path
+      )
+    end
+
+    by_name = scores.to_h { |row| [row.provider.payment_system, row] }
+    assert_operator by_name["vipay"].parts["financial_commitment"], :>, 0.5
+    assert_in_delta 0.5, by_name["payflow"].parts["financial_commitment"]
+  end
+
+  def test_daily_limit_nil_does_not_force_neutral_when_band_exists
+    vipay = build_provider(
+      payment_system: "vipay",
+      limit_amount_min: 1_000,
+      limit_amount_max: 100_000,
+      daily_amount_limit: nil,
+      daily_approved_amount: 0
+    )
+    operation = build_operation(amount: 50_500)
+
+    scores = with_financial_only do |path|
+      SmartRouter::SoftGoalsScorer.score(
+        [vipay],
+        operation: operation,
+        policies_path: path
+      )
+    end
+
+    assert_operator scores.first.parts["financial_commitment"], :>, 0.5
+  end
+
+  def test_amount_on_band_boundary_and_outside_sweet_zone_is_neutral
+    vipay = build_provider(
+      payment_system: "vipay",
+      limit_amount_min: 1_000,
+      limit_amount_max: 100_000,
+      daily_amount_limit: 5_000_000,
+      daily_approved_amount: 0
+    )
+
+    [1_000, 100_000, 500, 150_000].each do |amount|
+      scores = with_financial_only do |path|
+        SmartRouter::SoftGoalsScorer.score(
+          [vipay],
+          operation: build_operation(amount: amount),
+          policies_path: path
+        )
+      end
+      assert_in_delta 0.5, scores.first.parts["financial_commitment"],
+                      0.0, "amount=#{amount} should stay neutral"
+    end
+  end
+
+  def test_invalid_limit_params_raise_input_error_with_catalog_path
+    path = File.join(FIXTURES, "providers.json")
+    cases = [
+      [
+        { limit_amount_min: Float::NAN, limit_amount_max: 100_000 },
+        "limit_amount_min"
+      ],
+      [
+        { limit_amount_min: 1_000, limit_amount_max: Float::INFINITY },
+        "limit_amount_max"
+      ],
+      [
+        { daily_amount_limit: -1 },
+        "daily_amount_limit"
+      ],
+      [
+        { limit_amount_min: 100_000, limit_amount_max: 1_000 },
+        "limit_amount_min"
+      ],
+      [
+        {
+          payment_system: "spacepayments",
+          limit_amount_min: Float::NAN,
+          limit_amount_max: 100_000
+        },
+        "limit_amount_min"
+      ]
+    ]
+
+    cases.each do |overrides, expected_field|
+      broken = build_unchecked_provider(
+        { payment_system: "vipay" }.merge(overrides)
+      )
+      error = nil
+      with_financial_only do |policies_path|
+        error = assert_raises(SmartRouter::InputError) do
+          score_pool(
+            [broken],
+            policies_path: policies_path,
+            state: catalog_state(path)
+          )
+        end
+      end
+      assert_equal path, error.path
+      assert_includes error.message, path
+      assert_includes error.message, expected_field
+    end
   end
 
   def test_false_share_map_raises_input_error
@@ -690,8 +1040,30 @@ class SoftGoalsScorerTest < Minitest::Test
     strategy
   end
 
-  def build_provider(overrides = {})
-    hash = {
+  def catalog_state(path = File.join(FIXTURES, "providers.json"))
+    { "path" => path }
+  end
+
+  def with_conversion_only(&block)
+    with_policies(
+      "strategies" => {
+        "conversion_rate" => { "enabled" => true, "weight" => 1.0 }
+      },
+      &block
+    )
+  end
+
+  def with_financial_only(&block)
+    with_policies(
+      "strategies" => {
+        "financial_commitment" => { "enabled" => true, "weight" => 1.0 }
+      },
+      &block
+    )
+  end
+
+  def provider_attrs(overrides = {})
+    {
       "payment_system" => "test_provider",
       "status" => "active",
       "priority" => 1,
@@ -713,8 +1085,24 @@ class SoftGoalsScorerTest < Minitest::Test
       "merchant_margin_pct" => 1.5,
       "allow_negative_agreement" => false
     }.merge(overrides.transform_keys(&:to_s))
+  end
 
-    SmartRouter::Provider.from_hash(hash, path: "test")
+  def build_provider(overrides = {})
+    SmartRouter::Provider.from_hash(provider_attrs(overrides), path: "test")
+  end
+
+  def build_unchecked_provider(overrides = {})
+    SmartRouter::Provider.new(provider_attrs(overrides))
+  end
+
+  def build_neutral_soft_provider(overrides = {})
+    build_provider(
+      {
+        conversion_24h: 0.5,
+        limit_amount_min: nil,
+        limit_amount_max: nil
+      }.merge(overrides)
+    )
   end
 
   def build_operation(overrides = {})
